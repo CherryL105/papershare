@@ -1,6 +1,6 @@
 # PaperShare
 
-PaperShare 是一个用于**收集论文、批注论文和团队讨论**的轻量级 Node.js 应用。
+<font size=5> PaperShare 是一个用于**收集论文、批注论文和团队讨论**的轻量级 Node.js 应用。</font>
 
 ## 快速开始
 
