@@ -1,0 +1,36 @@
+[
+  {
+    "id": "annotation-1776066064895-64c144",
+    "paperId": "paper-1776051596719-90c9a3",
+    "note": "示例，可删除",
+    "exact": "Hua",
+    "prefix": ", Chen, Yize, Wang, Biqing, Zhao, Jing, ",
+    "suffix": ", Zhenqi, Wang, Lingjun, Chen, Qiming, Z",
+    "target_scope": "authors",
+    "start_offset": 182,
+    "end_offset": 185,
+    "created_by_user_id": "bootstrap-admin",
+    "created_by_username": "admin",
+    "created_at": "2026-04-13T07:41:04.895Z",
+    "parent_annotation_id": "",
+    "root_annotation_id": "annotation-1776066064895-64c144",
+    "attachments": []
+  },
+  {
+    "id": "annotation-1776066096581-5e6c12",
+    "paperId": "paper-1776051596719-90c9a3",
+    "note": "示例，可删除",
+    "exact": "Hua",
+    "prefix": ", Chen, Yize, Wang, Biqing, Zhao, Jing, ",
+    "suffix": ", Zhenqi, Wang, Lingjun, Chen, Qiming, Z",
+    "target_scope": "authors",
+    "start_offset": 182,
+    "end_offset": 185,
+    "created_by_user_id": "bootstrap-admin",
+    "created_by_username": "admin",
+    "created_at": "2026-04-13T07:41:36.581Z",
+    "parent_annotation_id": "annotation-1776066064895-64c144",
+    "root_annotation_id": "annotation-1776066064895-64c144",
+    "attachments": []
+  }
+]

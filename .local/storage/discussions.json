@@ -1,0 +1,24 @@
+[
+  {
+    "id": "discussion-1776066104601-4cdc9e",
+    "paperId": "paper-1776051596719-90c9a3",
+    "note": "示例，可删除",
+    "created_by_user_id": "bootstrap-admin",
+    "created_by_username": "admin",
+    "created_at": "2026-04-13T07:41:44.601Z",
+    "parent_discussion_id": "",
+    "root_discussion_id": "discussion-1776066104601-4cdc9e",
+    "attachments": []
+  },
+  {
+    "id": "discussion-1776066113831-b6a359",
+    "paperId": "paper-1776051596719-90c9a3",
+    "note": "示例，可删除",
+    "created_by_user_id": "bootstrap-admin",
+    "created_by_username": "admin",
+    "created_at": "2026-04-13T07:41:53.831Z",
+    "parent_discussion_id": "discussion-1776066104601-4cdc9e",
+    "root_discussion_id": "discussion-1776066104601-4cdc9e",
+    "attachments": []
+  }
+]

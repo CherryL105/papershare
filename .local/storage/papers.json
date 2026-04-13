@@ -1,0 +1,23 @@
+[
+  {
+    "id": "paper-1776051596719-90c9a3",
+    "sourceUrl": "https://www.nature.com/articles/s41586-026-10346-5",
+    "title": "Engineered immunosuppressive dendritic cells protect against cardiac remodelling - Nature",
+    "authors": "Li, Xiaoying, Li, Jiamin, Li, Guohua, Zhu, Lisheng, Cheng, Guo, Li, Huanqiang, Lin, Hao, Jia, Ningqing, Hong, Xiaoqian, Liu, Ye, Zhong, Zhiwei, Chen, Yize, Wang, Biqing, Zhao, Jing, Hua, Zhenqi, Wang, Lingjun, Chen, Qiming, Zheng, Peijie, Sheng, Shuyuan, Gu, Songting, Ni, Cheng, Ye, Shuchang, Ke, Changle, Zhang, Feimu, Li, Mo, Shi, Shaohui, He, Junhua, Wu, Yan, Xu, Yinghui, Kong, Minjian, Chen, Qi, Li, Huajun, Zhang, Yu, Sun, Jianzhong, Hu, Guanhua, Zhao, Chengchen, Dong, Yiping, Yu, Lili, Xu, Yang, Hu, Xinyang",
+    "journal": "Nature",
+    "published": "2026-04-08",
+    "abstract": "Heart failure remains a leading cause of morbidity and mortality, yet no approved therapies effectively prevent or reverse pathological cardiac fibrosis and the associated decline in cardiac function 1 , 2 , 3 , 4 . Chronic inflammation is a central driver of pathological fibrosis after ischaemic or haemodynamic stress, but strategies that locally rebalance injurious and reparative immune responses without systemic immunosuppression are lacking 5 , 6 . Dendritic cells (DCs) are key regulators of immune activation and tolerance, providing an opportunity for therapeutic immune reprogramming in cardiac diseases 7 , 8 . Here we show that engineered immunosuppressive and fibrosis-targeted DCs (iCDCs) effectively protect against pathological cardiac remodelling. In mouse models of ischaemia–reperfusion injury, myocardial infarction and pressure overload, iCDC therapy reduced inflammatory cardiac fibrosis, improved cardiac perfusion and preserved contractility. Mechanistically, iCDCs conferred sustained cardioprotection directly by suppressing immune and stromal cell activation or indirectly through promoting clonal expansion of regulatory T cells. Importantly, in a non-human primate model of myocardial infarction, iCDC therapy also reduced cardiac fibrosis, improved cardiac perfusion and contractile function without inducing systemic toxicity. These findings establish lesion-targeted immune modulation as a feasible strategy to control cardiac fibrosis and identify engineered dendritic cells as a promising therapeutic platform for treating cardiac remodelling and heart failure.",
+    "keywords": [],
+    "fetchedAt": "2026-04-13T03:39:56.727Z",
+    "updatedAt": "2026-04-13T03:39:56.727Z",
+    "createdAt": "2026-04-13T03:39:56.727Z",
+    "created_by_user_id": "bootstrap-admin",
+    "created_by_username": "admin",
+    "snapshotPath": "html/paper-1776051596719-90c9a3.html",
+    "hasSnapshot": true,
+    "articleImagesEnabled": true,
+    "speechCount": 0,
+    "latestSpeechAt": "",
+    "latestSpeakerUsername": ""
+  }
+]
