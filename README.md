@@ -48,6 +48,12 @@ npm -v
 
 ### 2. 安装项目依赖
 
+进入项目根目录：
+
+```bash
+cd 你的项目根目录路径
+```
+
 在项目根目录执行：
 
 ```bash
@@ -82,7 +88,7 @@ PORT=你的端口
 
 **(1)** 开放端口，终端输入：
 ```bash
-cd 你的文件夹路径/papershare
+cd 你的项目根目录路径
 npm start
 ```
 注：如果远程连接服务器，想在关闭终端后仍保持端口开放，请使用`pm2`，而非`npm start`。
@@ -94,7 +100,7 @@ npm start
 
 - 启动
     ```bash
-    cd 你的文件夹路径/papershare
+    cd 你的项目根目录路径
     pm2 start server.js --name papershare
     ```
 
