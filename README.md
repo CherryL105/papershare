@@ -25,7 +25,7 @@ PORT=你的端口
 
 - `PORT` 默认值为 `3000`，只有当 3000 端口被占用时才需要修改。
 
-- `PAPERSHARE_STORAGE_DIR` 默认值为项目下的 `.local/storage` 文件夹。该文件夹里有样例文章、样例批注和样例讨论。可自修改为其它本地文件夹。
+- `PAPERSHARE_STORAGE_DIR` 如果不填，会默认在项目下创建 `.local/storage` 文件夹用于存储应用数据。可自行修改为其它本地文件夹。
     - 不要提交 `.local/`。
     - 不要提交 `.env`。
 
