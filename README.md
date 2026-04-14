@@ -241,6 +241,8 @@ docker start papershare
 docker rm -f papershare
 ```
 
+若此前自定义了存储路径，把数据保存在了宿主机指定目录，请手动删除对应存储文件夹。
+
 ## 6. 升级到新版本
 
 先拉取新镜像：
