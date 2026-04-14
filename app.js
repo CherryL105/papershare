@@ -1,7 +1,7 @@
 const CONTEXT_RADIUS = 40;
 const DEFAULT_API_ORIGIN = "http://127.0.0.1:3000";
 const API_BASE_URL_STORAGE_KEY = "papershare_api_base_url";
-const APP_TITLE = "Yang Group文章分享讨论";
+const APP_TITLE = "Papershare 文章分享讨论";
 const SESSION_TOKEN_STORAGE_KEY = "papershare_session_token";
 const CURRENT_USER_STORAGE_KEY = "papershare_current_user";
 const LIBRARY_LAYOUT_STORAGE_KEY_PREFIX = "papershare_library_layout";
