@@ -180,10 +180,10 @@ docker run -d \
 说明：
 - `-p 3000:3000`：把宿主机 3000 端口映射到容器 3000 端口
 - `-e PORT=3000`：容器内服务端口
-- `-e ELSEVIER_API_KEY=...`：可选；如果需要抓取 Elsevier 正文和 Figure，建议填写
+- `-e ELSEVIER_API_KEY=...`：可选；如果需要z抓取 Elsevier 正文和 Figure，建议填写
 - `-v "你希望的存储路径":/data`：
     - 如果希望把应用数据持久化到 Docker volume，重启或升级容器后数据不会丢失：`-v papershare_data:/data`
-    - 如果希望把数据保存在宿主机指定目录，例如 `/home/user/papershare-data`：`-v /home/user/papershare-data:/data`：
+    - 如果希望把数据保存在宿主机指定目录，例如 `/home/user/papershare-data`：`-v /home/user/papershare-data:/data`：。注意：请确保该目录已存在。
 - `cherryl105/papershare:1.0.0`：注意`1.0.0`替换成实际拉取的对应版本
 
 ## 3. 访问系统
@@ -264,4 +264,4 @@ docker run -d \
   cherryl105/papershare:"新版本号"
 ```
 
-由于数据保存在 `papershare_data` volume 中，所以升级后原有数据会保留。
+如果数据保存在 `papershare_data` volume 中，升级后原有数据会保留。
