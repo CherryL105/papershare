@@ -248,7 +248,7 @@ docker rm -f papershare
 先拉取新镜像：
 
 ```bash
-docker pull cherryl105/papershare:1.0.0
+docker pull cherryl105/papershare:"新版本号"
 ```
 
 然后删除旧容器并重新启动：
@@ -259,9 +259,9 @@ docker run -d \
   --name papershare \
   -p 3000:3000 \
   -e PORT=3000 \
-  -e ELSEVIER_API_KEY=你的Elsevier_API_key \
-  -v papershare_data:/data \
-  cherryl105/papershare:1.0.0
+  -e ELSEVIER_API_KEY="你的Elsevier_API_key" \
+  -v "你希望的存储路径":/data \
+  cherryl105/papershare:"新版本号"
 ```
 
 由于数据保存在 `papershare_data` volume 中，所以升级后原有数据会保留。
