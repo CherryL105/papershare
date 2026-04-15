@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import request from "supertest";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -66,6 +66,266 @@ function createImportHtml(title, bodyText) {
   </html>`;
 }
 
+function createPublisherHtml({ title, authors, journal, abstract, bodyHtml, extraHead = "" }) {
+  const authorMetaTags = authors
+    .map((author) => `<meta name="citation_author" content="${author}" />`)
+    .join("\n      ");
+
+  return `<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <title>${title}</title>
+      <meta property="og:title" content="${title}" />
+      <meta name="citation_title" content="${title}" />
+      ${authorMetaTags}
+      <meta name="citation_journal_title" content="${journal}" />
+      <meta name="citation_publication_date" content="2026-04-15" />
+      <meta name="citation_abstract" content="${abstract}" />
+      <meta name="description" content="${abstract}" />
+      ${extraHead}
+    </head>
+    <body>
+      <main>
+        <article>
+          <h1>${title}</h1>
+          ${bodyHtml}
+        </article>
+      </main>
+    </body>
+  </html>`;
+}
+
+function createNatureHtml() {
+  return createPublisherHtml({
+    title: "Nature Linked Paper",
+    authors: ["Ada Nature", "Ben Nature"],
+    journal: "Nature",
+    abstract: "Nature abstract for linked import.",
+    extraHead: '<meta name="citation_fulltext_html_url" content="https://www.nature.com/articles/test" />',
+    bodyHtml: `
+      <section class="c-article-body">
+        <p>Nature body paragraph for linked import.</p>
+      </section>
+    `,
+  });
+}
+
+function createWileyHtml() {
+  return createPublisherHtml({
+    title: "Wiley Imported Paper",
+    authors: ["Willa Wiley", "Robin Review"],
+    journal: "Wiley Interdisciplinary Reviews",
+    abstract: "Wiley abstract for HTML import.",
+    extraHead: '<meta name="citation_fulltext_html_url" content="https://onlinelibrary.wiley.com/doi/full/test" />',
+    bodyHtml: `
+      <section class="article__body">
+        <h2>Abstract</h2>
+        <p>Wiley body paragraph for imported HTML snapshots.</p>
+      </section>
+    `,
+  });
+}
+
+function createScienceHtml() {
+  return createPublisherHtml({
+    title: "Science Imported Paper",
+    authors: ["Sam Science", "Dana Discovery"],
+    journal: "Science",
+    abstract: "Science abstract for HTML import.",
+    extraHead: '<meta name="citation_fulltext_html_url" content="https://www.science.org/doi/full/test" />',
+    bodyHtml: `
+      <section class="article-section article-section__full">
+        <div class="abstract-group">
+          <p>Science body paragraph for imported HTML snapshots.</p>
+        </div>
+      </section>
+    `,
+  });
+}
+
+function createElsevierFullTextXml() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+  <full-text-retrieval-response
+    xmlns="http://www.elsevier.com/xml/svapi/article/dtd"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/"
+    xmlns:dcterms="http://purl.org/dc/terms/"
+    xmlns:ce="http://www.elsevier.com/xml/common/dtd"
+    xmlns:ja="http://www.elsevier.com/xml/ja/dtd"
+  >
+    <coredata>
+      <dc:title>Elsevier API Paper</dc:title>
+      <dc:creator>Alice Elsevier</dc:creator>
+      <dc:creator>Bob API</dc:creator>
+      <dc:description>Elsevier abstract text.</dc:description>
+      <prism:publicationName>Journal of Testing</prism:publicationName>
+      <prism:doi>10.1016/j.test.2026.01.001</prism:doi>
+      <prism:coverDate>2026-01-01</prism:coverDate>
+      <dcterms:subject>Cell biology</dcterms:subject>
+    </coredata>
+    <article>
+      <body>
+        <ce:sections>
+          <ce:section>
+            <ce:section-title>Introduction</ce:section-title>
+            <ce:para>Elsevier body content from API XML.</ce:para>
+          </ce:section>
+        </ce:sections>
+      </body>
+      <tail>
+        <ce:bibliography>
+          <ce:section-title>References</ce:section-title>
+          <ce:bib-reference>
+            <ce:label>[1]</ce:label>
+            <ce:textref>Reference entry.</ce:textref>
+          </ce:bib-reference>
+        </ce:bibliography>
+      </tail>
+    </article>
+  </full-text-retrieval-response>`;
+}
+
+function mockFetchResponse(body, options = {}) {
+  return new Response(body, {
+    status: options.status || 200,
+    headers: options.headers || {
+      "content-type": "text/html; charset=utf-8",
+    },
+  });
+}
+
+function mockFetchSequence(...responses) {
+  const fetchMock = vi.spyOn(globalThis, "fetch");
+
+  responses.forEach((responseConfig) => {
+    fetchMock.mockResolvedValueOnce(
+      responseConfig instanceof Response
+        ? responseConfig
+        : mockFetchResponse(responseConfig.body || "", {
+            status: responseConfig.status,
+            headers: responseConfig.headers,
+          })
+    );
+  });
+
+  return fetchMock;
+}
+
+async function loginAs(agent, username = "admin", password = "1234") {
+  const response = await agent.post("/api/auth/login").send({
+    username,
+    password,
+  });
+
+  expect(response.status).toBe(200);
+  return response;
+}
+
+async function createMemberUser(agent, username, password = "pass1234") {
+  const response = await agent.post("/api/users").send({
+    username,
+    password,
+  });
+
+  expect(response.status).toBe(201);
+  return response.body.user;
+}
+
+async function importHtmlPaper(agent, sourceUrl, rawHtml) {
+  const response = await agent.post("/api/papers/import-html").send({
+    sourceUrl,
+    rawHtml,
+  });
+
+  expect(response.status).toBe(201);
+  return response.body;
+}
+
+async function createAnnotation(agent, paperId, overrides = {}) {
+  const response = await agent.post(`/api/papers/${paperId}/annotations`).send({
+    exact: "Paper",
+    note: "Test annotation",
+    prefix: "",
+    suffix: "",
+    target_scope: "body",
+    start_offset: 0,
+    end_offset: 5,
+    ...overrides,
+  });
+
+  expect(response.status).toBe(201);
+  return response.body;
+}
+
+async function createDiscussion(agent, paperId, overrides = {}) {
+  const response = await agent.post(`/api/papers/${paperId}/discussions`).send({
+    note: "Test discussion",
+    ...overrides,
+  });
+
+  expect(response.status).toBe(201);
+  return response.body;
+}
+
+async function createAnnotationReply(agent, annotationId, overrides = {}) {
+  const response = await agent.post(`/api/annotations/${annotationId}/replies`).send({
+    note: "Test annotation reply",
+    ...overrides,
+  });
+
+  expect(response.status).toBe(201);
+  return response.body;
+}
+
+async function createDiscussionReply(agent, discussionId, overrides = {}) {
+  const response = await agent.post(`/api/discussions/${discussionId}/replies`).send({
+    note: "Test discussion reply",
+    ...overrides,
+  });
+
+  expect(response.status).toBe(201);
+  return response.body;
+}
+
+async function postMultipartAttachment(agent, targetPath, options = {}) {
+  const {
+    fields = {},
+    filename = "attachment.csv",
+    content = "col1,col2\n1,2\n",
+    contentType = "text/csv",
+  } = options;
+
+  let requestBuilder = agent.post(targetPath);
+
+  Object.entries(fields).forEach(([fieldName, value]) => {
+    if (value !== undefined && value !== null) {
+      requestBuilder = requestBuilder.field(fieldName, String(value));
+    }
+  });
+
+  return requestBuilder.attach("attachments", Buffer.from(content, "utf8"), {
+    contentType,
+    filename,
+  });
+}
+
+async function getPaperContent(agent, paperId) {
+  const response = await agent.get(`/api/papers/${paperId}/content`);
+
+  expect(response.status).toBe(200);
+  return response.body.rawHtml;
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
 beforeAll(() => {
   if (!builtClient) {
     execFileSync("npm", ["run", "build"], {
@@ -79,6 +339,9 @@ beforeAll(() => {
 afterEach(() => {
   delete process.env.PAPERSHARE_STORAGE_DIR;
   delete process.env.PAPERSHARE_ALLOWED_ORIGINS;
+  delete process.env.ELSEVIER_API_KEY;
+  delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  vi.restoreAllMocks();
 });
 
 describe("SQLite migration and API flows", () => {
@@ -319,5 +582,446 @@ describe("SQLite migration and API flows", () => {
     expect(annotationResponse.body.attachments).toHaveLength(1);
     expect(annotationResponse.body.attachments[0].original_name).toBe("table.csv");
     expect(annotationResponse.body.attachments[0].url).toContain("/api/storage/");
+  });
+
+  it("imports Nature papers from source links by fetching HTML snapshots", async () => {
+    const storageDir = await createStorageDir();
+    const sourceUrl = "https://www.nature.com/articles/s41586-026-00001-1";
+    const fetchMock = mockFetchSequence({
+      body: createNatureHtml(),
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+      },
+    });
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+
+    const importResponse = await admin.post("/api/papers").send({
+      sourceUrl,
+    });
+
+    expect(importResponse.status).toBe(201);
+    expect(importResponse.body.title).toBe("Nature Linked Paper");
+    expect(importResponse.body.authors).toContain("Ada Nature");
+    expect(importResponse.body.journal).toBe("Nature");
+
+    const rawHtml = await getPaperContent(admin, importResponse.body.id);
+    expect(rawHtml).toContain("Nature body paragraph for linked import.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(sourceUrl);
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("api.elsevier.com");
+  });
+
+  it("imports Elsevier papers from source links through the Full Text API", async () => {
+    const storageDir = await createStorageDir();
+    const sourceUrl = "https://www.sciencedirect.com/science/article/pii/S1234567890123456";
+    const fetchMock = mockFetchSequence({
+      body: createElsevierFullTextXml(),
+      headers: {
+        "content-type": "text/xml; charset=utf-8",
+      },
+    });
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+
+    const importResponse = await admin.post("/api/papers").send({
+      sourceUrl,
+      elsevierApiKey: "test-api-key",
+    });
+
+    expect(importResponse.status).toBe(201);
+    expect(importResponse.body.title).toBe("Elsevier API Paper");
+    expect(importResponse.body.journal).toBe("Journal of Testing");
+    expect(importResponse.body.abstract).toBe("Elsevier abstract text.");
+
+    const rawHtml = await getPaperContent(admin, importResponse.body.id);
+    expect(rawHtml).toContain("Imported From Elsevier Full Text API");
+    expect(rawHtml).toContain("Elsevier body content from API XML.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "https://api.elsevier.com/content/article/pii/S1234567890123456"
+    );
+    expect(fetchMock.mock.calls[0][1].headers["X-ELS-APIKey"]).toBe("test-api-key");
+  });
+
+  for (const scenario of [
+    {
+      label: "Wiley",
+      sourceUrl: "https://onlinelibrary.wiley.com/doi/full/10.1002/wcms.1234",
+      html: createWileyHtml(),
+      expectedTitle: "Wiley Imported Paper",
+      expectedAuthor: "Willa Wiley",
+      expectedJournal: "Wiley Interdisciplinary Reviews",
+      expectedMarker: "Wiley body paragraph for imported HTML snapshots.",
+    },
+    {
+      label: "Science",
+      sourceUrl: "https://www.science.org/doi/10.1126/science.abcd1234",
+      html: createScienceHtml(),
+      expectedTitle: "Science Imported Paper",
+      expectedAuthor: "Sam Science",
+      expectedJournal: "Science",
+      expectedMarker: "Science body paragraph for imported HTML snapshots.",
+    },
+  ]) {
+    it(`imports ${scenario.label} HTML snapshots`, async () => {
+      const storageDir = await createStorageDir();
+      const core = await loadCoreForStorage(storageDir);
+      const app = core.createHttpServer();
+      const admin = request.agent(app);
+
+      await loginAs(admin);
+
+      const paper = await importHtmlPaper(admin, scenario.sourceUrl, scenario.html);
+      expect(paper.title).toBe(scenario.expectedTitle);
+      expect(paper.authors).toContain(scenario.expectedAuthor);
+      expect(paper.journal).toBe(scenario.expectedJournal);
+
+      const rawHtml = await getPaperContent(admin, paper.id);
+      expect(rawHtml).toContain(scenario.expectedMarker);
+      expect(rawHtml).toContain(scenario.expectedTitle);
+    });
+  }
+
+  it("accepts multipart discussion attachments without a text note", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+
+    const paper = await importHtmlPaper(
+      admin,
+      "https://example.org/papers/discussion-attachment",
+      createImportHtml("Discussion Attachment Paper", "Discussion attachment body")
+    );
+    const discussionResponse = await postMultipartAttachment(
+      admin,
+      `/api/papers/${paper.id}/discussions`,
+      {
+        filename: "discussion-figure.png",
+        content: "fake image bytes",
+        contentType: "image/png",
+      }
+    );
+
+    expect(discussionResponse.status).toBe(201);
+    expect(discussionResponse.body.note).toBe("");
+    expect(discussionResponse.body.attachments).toHaveLength(1);
+    expect(discussionResponse.body.attachments[0].original_name).toBe("discussion-figure.png");
+    expect(discussionResponse.body.attachments[0].url).toContain("/api/storage/");
+  });
+
+  it("accepts multipart annotation reply attachments without a text note", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+
+    const paper = await importHtmlPaper(
+      admin,
+      "https://example.org/papers/annotation-reply-attachment",
+      createImportHtml("Annotation Reply Paper", "Paper reply body")
+    );
+    const annotation = await createAnnotation(admin, paper.id);
+    const replyResponse = await postMultipartAttachment(
+      admin,
+      `/api/annotations/${annotation.id}/replies`,
+      {
+        filename: "annotation-reply.csv",
+        contentType: "text/csv",
+      }
+    );
+
+    expect(replyResponse.status).toBe(201);
+    expect(replyResponse.body.note).toBe("");
+    expect(replyResponse.body.attachments).toHaveLength(1);
+    expect(replyResponse.body.attachments[0].original_name).toBe("annotation-reply.csv");
+    expect(replyResponse.body.attachments[0].url).toContain("/api/storage/");
+  });
+
+  it("accepts multipart discussion reply attachments without a text note", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+
+    const paper = await importHtmlPaper(
+      admin,
+      "https://example.org/papers/discussion-reply-attachment",
+      createImportHtml("Discussion Reply Paper", "Discussion reply body")
+    );
+    const discussion = await createDiscussion(admin, paper.id);
+    const replyResponse = await postMultipartAttachment(
+      admin,
+      `/api/discussions/${discussion.id}/replies`,
+      {
+        filename: "discussion-reply.csv",
+        contentType: "text/csv",
+      }
+    );
+
+    expect(replyResponse.status).toBe(201);
+    expect(replyResponse.body.note).toBe("");
+    expect(replyResponse.body.attachments).toHaveLength(1);
+    expect(replyResponse.body.attachments[0].original_name).toBe("discussion-reply.csv");
+    expect(replyResponse.body.attachments[0].url).toContain("/api/storage/");
+  });
+
+  it("deletes users without purging their uploaded papers and discussion history", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+
+    const retainedUser = await createMemberUser(admin, "retain-member", "retain-pass");
+    const member = request.agent(app);
+
+    await loginAs(member, "retain-member", "retain-pass");
+
+    const paper = await importHtmlPaper(
+      member,
+      "https://example.org/papers/retained-history",
+      createImportHtml("Retained History Paper", "Paper body for retained history")
+    );
+    const annotation = await createAnnotation(member, paper.id, {
+      exact: "Paper",
+      end_offset: 5,
+    });
+    const discussion = await createDiscussion(member, paper.id, {
+      note: "Retained root discussion",
+    });
+
+    await createAnnotationReply(member, annotation.id, {
+      note: "Retained annotation reply",
+    });
+    await createDiscussionReply(member, discussion.id, {
+      note: "Retained discussion reply",
+    });
+
+    const deleteResponse = await admin.delete(`/api/users/${retainedUser.id}`);
+
+    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.body.deletedUserId).toBe(retainedUser.id);
+    expect(deleteResponse.body.purgeContent).toBe(false);
+    expect(deleteResponse.body.deletedContent).toBeNull();
+
+    const usersResponse = await admin.get("/api/users");
+    expect(usersResponse.status).toBe(200);
+    expect(usersResponse.body.find((user) => user.id === retainedUser.id)).toBeUndefined();
+
+    const reloginAgent = request.agent(app);
+    const reloginResponse = await reloginAgent.post("/api/auth/login").send({
+      username: "retain-member",
+      password: "retain-pass",
+    });
+    expect(reloginResponse.status).toBe(401);
+
+    const papersResponse = await admin.get("/api/papers");
+    expect(papersResponse.status).toBe(200);
+    expect(papersResponse.body).toHaveLength(1);
+    expect(papersResponse.body[0].speechCount).toBe(4);
+
+    const statusResponse = await admin.get("/api/status");
+    expect(statusResponse.status).toBe(200);
+    expect(statusResponse.body.paperCount).toBe(1);
+    expect(statusResponse.body.annotationCount).toBe(2);
+    expect(statusResponse.body.discussionCount).toBe(2);
+
+    const annotationsResponse = await admin.get(`/api/papers/${paper.id}/annotations`);
+    expect(annotationsResponse.status).toBe(200);
+    expect(annotationsResponse.body).toHaveLength(2);
+
+    const discussionsResponse = await admin.get(`/api/papers/${paper.id}/discussions`);
+    expect(discussionsResponse.status).toBe(200);
+    expect(discussionsResponse.body).toHaveLength(2);
+  });
+
+  it("purges uploaded papers, speech records, snapshots, and attachments when deleting a user", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+
+    const purgeUser = await createMemberUser(admin, "purge-member", "purge-pass");
+    const member = request.agent(app);
+
+    await loginAs(member, "purge-member", "purge-pass");
+
+    const paper = await importHtmlPaper(
+      member,
+      "https://example.org/papers/purge-history",
+      createImportHtml("Purge History Paper", "Paper body for purged history")
+    );
+    const snapshotAbsolutePath = path.join(storageDir, paper.snapshotPath);
+    const annotationResponse = await postMultipartAttachment(
+      member,
+      `/api/papers/${paper.id}/annotations`,
+      {
+        fields: {
+          exact: "Paper",
+          note: "Purged annotation",
+          prefix: "",
+          suffix: "",
+          target_scope: "body",
+          start_offset: "0",
+          end_offset: "5",
+        },
+        filename: "purged-annotation.csv",
+      }
+    );
+    expect(annotationResponse.status).toBe(201);
+
+    const discussionResponse = await postMultipartAttachment(
+      member,
+      `/api/papers/${paper.id}/discussions`,
+      {
+        fields: {
+          note: "Purged discussion",
+        },
+        filename: "purged-discussion.png",
+        content: "fake image bytes",
+        contentType: "image/png",
+      }
+    );
+    expect(discussionResponse.status).toBe(201);
+
+    await createAnnotationReply(member, annotationResponse.body.id, {
+      note: "Purged annotation reply",
+    });
+    await createDiscussionReply(member, discussionResponse.body.id, {
+      note: "Purged discussion reply",
+    });
+
+    const annotationAttachmentAbsolutePath = path.join(
+      storageDir,
+      annotationResponse.body.attachments[0].storage_path
+    );
+    const discussionAttachmentAbsolutePath = path.join(
+      storageDir,
+      discussionResponse.body.attachments[0].storage_path
+    );
+
+    expect(await pathExists(snapshotAbsolutePath)).toBe(true);
+    expect(await pathExists(annotationAttachmentAbsolutePath)).toBe(true);
+    expect(await pathExists(discussionAttachmentAbsolutePath)).toBe(true);
+
+    const deleteResponse = await admin.delete(`/api/users/${purgeUser.id}?purgeContent=1`);
+
+    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.body.deletedUserId).toBe(purgeUser.id);
+    expect(deleteResponse.body.purgeContent).toBe(true);
+    expect(deleteResponse.body.deletedContent).toEqual({
+      paperCount: 1,
+      annotationCount: 2,
+      discussionCount: 2,
+    });
+
+    const reloginAgent = request.agent(app);
+    const reloginResponse = await reloginAgent.post("/api/auth/login").send({
+      username: "purge-member",
+      password: "purge-pass",
+    });
+    expect(reloginResponse.status).toBe(401);
+
+    const papersResponse = await admin.get("/api/papers");
+    expect(papersResponse.status).toBe(200);
+    expect(papersResponse.body).toHaveLength(0);
+
+    const statusResponse = await admin.get("/api/status");
+    expect(statusResponse.status).toBe(200);
+    expect(statusResponse.body.paperCount).toBe(0);
+    expect(statusResponse.body.annotationCount).toBe(0);
+    expect(statusResponse.body.discussionCount).toBe(0);
+
+    expect(await pathExists(snapshotAbsolutePath)).toBe(false);
+    expect(await pathExists(annotationAttachmentAbsolutePath)).toBe(false);
+    expect(await pathExists(discussionAttachmentAbsolutePath)).toBe(false);
+  });
+
+  it("transfers admin privileges across existing sessions and fresh logins", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+
+    const promotedUser = await createMemberUser(admin, "next-admin", "next-admin-pass");
+    const member = request.agent(app);
+
+    await loginAs(member, "next-admin", "next-admin-pass");
+
+    const transferResponse = await admin.post(`/api/users/${promotedUser.id}/transfer-admin`);
+
+    expect(transferResponse.status).toBe(200);
+    expect(transferResponse.body.currentUser.role).toBe("member");
+    expect(transferResponse.body.targetUser.role).toBe("admin");
+
+    const oldAdminMeResponse = await admin.get("/api/auth/me");
+    expect(oldAdminMeResponse.status).toBe(200);
+    expect(oldAdminMeResponse.body.authenticated).toBe(true);
+    expect(oldAdminMeResponse.body.user.role).toBe("member");
+
+    const oldAdminCreateUserResponse = await admin.post("/api/users").send({
+      username: "blocked-after-transfer",
+      password: "pass1234",
+    });
+    expect(oldAdminCreateUserResponse.status).toBe(403);
+
+    const oldAdminNormalRouteResponse = await admin.get("/api/papers");
+    expect(oldAdminNormalRouteResponse.status).toBe(200);
+
+    const newAdminMeResponse = await member.get("/api/auth/me");
+    expect(newAdminMeResponse.status).toBe(200);
+    expect(newAdminMeResponse.body.authenticated).toBe(true);
+    expect(newAdminMeResponse.body.user.role).toBe("admin");
+
+    const newAdminCreateUserResponse = await member.post("/api/users").send({
+      username: "created-from-existing-session",
+      password: "pass1234",
+    });
+    expect(newAdminCreateUserResponse.status).toBe(201);
+
+    const oldAdminRelogin = request.agent(app);
+    await loginAs(oldAdminRelogin, "admin", "1234");
+
+    const oldAdminReloginMeResponse = await oldAdminRelogin.get("/api/auth/me");
+    expect(oldAdminReloginMeResponse.status).toBe(200);
+    expect(oldAdminReloginMeResponse.body.user.role).toBe("member");
+
+    const oldAdminReloginCreateResponse = await oldAdminRelogin.post("/api/users").send({
+      username: "blocked-after-relogin",
+      password: "pass1234",
+    });
+    expect(oldAdminReloginCreateResponse.status).toBe(403);
+
+    const newAdminRelogin = request.agent(app);
+    await loginAs(newAdminRelogin, "next-admin", "next-admin-pass");
+
+    const newAdminReloginMeResponse = await newAdminRelogin.get("/api/auth/me");
+    expect(newAdminReloginMeResponse.status).toBe(200);
+    expect(newAdminReloginMeResponse.body.user.role).toBe("admin");
+
+    const newAdminReloginCreateResponse = await newAdminRelogin.post("/api/users").send({
+      username: "created-after-relogin",
+      password: "pass1234",
+    });
+    expect(newAdminReloginCreateResponse.status).toBe(201);
   });
 });
