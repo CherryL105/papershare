@@ -7,6 +7,7 @@ const { promisify } = require("util");
 const Busboy = require("busboy");
 const { XMLParser } = require("fast-xml-parser");
 const { createRouter } = require("./router");
+const { createServices } = require("./services");
 const { TABLES, createSqliteStore } = require("./storage/sqlite-store");
 const {
   ARTICLE_IMAGE_SOURCE_RULES,
@@ -110,6 +111,7 @@ const SQLITE_STORE = createSqliteStore({
   },
 });
 let appRouter = null;
+let appServices = null;
 const DEFAULT_USERS = [
   {
     id: "bootstrap-admin",
@@ -164,10 +166,18 @@ function createHttpServer() {
 
 function ensureAppRouter() {
   if (!appRouter) {
-    appRouter = createRouter(createRouteServices());
+    appRouter = createRouter(ensureAppServices());
   }
 
   return appRouter;
+}
+
+function ensureAppServices() {
+  if (!appServices) {
+    appServices = createAppServices();
+  }
+
+  return appServices;
 }
 
 async function routeRequest(request, response) {
@@ -4207,17 +4217,19 @@ function createUserId(username) {
   return slug ? `user-${slug}-${suffix}` : `user-${Date.now()}-${suffix}`;
 }
 
-function createRouteServices() {
-  return {
+function createAppServices() {
+  return createServices({
     ANNOTATIONS_FILE,
     DISCUSSIONS_FILE,
     PAPERS_FILE,
     PORT,
     STORAGE_DIR,
+    HttpError,
     applyCorsHeaders,
     assertAdminUser,
     changeUserPassword,
     changeUsername,
+    clearAnnotationsByPaperId,
     createMemberUser,
     deleteAnnotationById,
     deleteDiscussionById,
@@ -4225,13 +4237,13 @@ function createRouteServices() {
     deleteSession,
     deleteUserById,
     enforceSnapshotArticleImagePolicy,
+    ensureStorageFiles,
     fetchAndStorePaper,
     fetchElsevierObjectBinary,
     fs,
     getAnnotationsByPaperId,
     getAnnotationsByUserId,
     getCurrentUserFromRequest,
-    getDiscussionById,
     getDiscussionsByPaperId,
     getJsonCollectionLength,
     getPaperById,
@@ -4244,9 +4256,6 @@ function createRouteServices() {
     loginUser,
     normalizeMimeType,
     path,
-    readAnnotations,
-    readDiscussions,
-    readPapers,
     readRequestJson,
     readSpeechMutationBody,
     saveAnnotation,
@@ -4262,8 +4271,7 @@ function createRouteServices() {
     transferAdminRole,
     updateAnnotationById,
     updateDiscussionById,
-    clearAnnotationsByPaperId,
-  };
+  });
 }
 
 module.exports = {

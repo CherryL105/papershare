@@ -690,7 +690,7 @@ describe("SQLite migration and API flows", () => {
     expect(response.body.user.username).toBe("admin");
   });
 
-  it("keeps the main collaboration flow working against sqlite-backed storage", async () => {
+  it("keeps the main collaboration flow working against sqlite-backed storage in an end-to-end smoke path", async () => {
     const storageDir = await createStorageDir();
     const core = await loadCoreForStorage(storageDir);
     const app = core.createHttpServer();

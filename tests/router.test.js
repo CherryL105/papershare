@@ -10,14 +10,20 @@ describe("router auth guard", () => {
   it("blocks requiresAuth routes even when the pathname is not under /api/", async () => {
     const router = createRouter(
       {
-        PORT: 3000,
-        applyCorsHeaders: () => {},
-        getCurrentUserFromRequest: async () => null,
-        sendJson: (response, statusCode, payload) => {
-          response.writeHead(statusCode, {
-            "Content-Type": "application/json; charset=utf-8",
-          });
-          response.end(JSON.stringify(payload));
+        runtime: {
+          PORT: 3000,
+        },
+        http: {
+          applyCorsHeaders: () => {},
+          sendJson: (response, statusCode, payload) => {
+            response.writeHead(statusCode, {
+              "Content-Type": "application/json; charset=utf-8",
+            });
+            response.end(JSON.stringify(payload));
+          },
+        },
+        auth: {
+          getCurrentUserFromRequest: async () => null,
         },
       },
       [
@@ -25,8 +31,8 @@ describe("router auth guard", () => {
           method: "GET",
           pattern: "/private",
           requiresAuth: true,
-          handler: async ({ core, response }) => {
-            core.sendJson(response, 200, { ok: true });
+          handler: async ({ services, response }) => {
+            services.http.sendJson(response, 200, { ok: true });
           },
         },
       ]

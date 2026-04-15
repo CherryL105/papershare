@@ -1,4 +1,6 @@
-function createApiRoutes(core) {
+function createApiRoutes(services) {
+  const { assets, auth, dashboard, http, papers, speech, system, users } = services;
+
   return [
     {
       method: "POST",
@@ -6,10 +8,10 @@ function createApiRoutes(core) {
       requiresAuth: false,
       handler: async ({ request, response }) => {
         try {
-          const body = await core.readRequestJson(request);
-          const session = await core.loginUser(body);
+          const body = await http.readJson(request);
+          const session = await auth.login(body);
 
-          core.sendJson(
+          http.sendJson(
             response,
             200,
             {
@@ -18,11 +20,11 @@ function createApiRoutes(core) {
               user: session.user,
             },
             {
-              "Set-Cookie": core.serializeSessionCookie(request, session.token),
+              "Set-Cookie": http.serializeSessionCookie(request, session.token),
             }
           );
         } catch (error) {
-          core.sendJson(response, 401, { error: error.message || "登录失败" });
+          http.sendJson(response, 401, { error: error.message || "登录失败" });
         }
       },
     },
@@ -31,9 +33,9 @@ function createApiRoutes(core) {
       pattern: "/api/auth/me",
       requiresAuth: false,
       handler: async ({ currentUser, response }) => {
-        core.sendJson(response, 200, {
+        http.sendJson(response, 200, {
           authenticated: Boolean(currentUser),
-          user: currentUser ? core.serializeUser(currentUser) : null,
+          user: currentUser ? auth.serializeUser(currentUser) : null,
         });
       },
     },
@@ -42,20 +44,20 @@ function createApiRoutes(core) {
       pattern: "/api/auth/logout",
       requiresAuth: false,
       handler: async ({ request, response }) => {
-        const sessionToken = core.getSessionTokenFromRequest(request);
+        const sessionToken = http.getSessionTokenFromRequest(request);
 
         if (sessionToken) {
-          await core.deleteSession(sessionToken);
+          await auth.deleteSession(sessionToken);
         }
 
-        core.sendJson(
-            response,
-            200,
-            { ok: true },
-            {
-              "Set-Cookie": core.serializeExpiredSessionCookie(request),
-            }
-          );
+        http.sendJson(
+          response,
+          200,
+          { ok: true },
+          {
+            "Set-Cookie": http.serializeExpiredSessionCookie(request),
+          }
+        );
       },
     },
     {
@@ -64,8 +66,8 @@ function createApiRoutes(core) {
       requiresAuth: false,
       handler: async ({ request, requestUrl, response }) => {
         const eid = String(requestUrl.searchParams.get("eid") || "").trim();
-        const mimeType = core.normalizeMimeType(requestUrl.searchParams.get("mimeType") || "");
-        const { contentType, content } = await core.fetchElsevierObjectBinary(eid, mimeType);
+        const mimeType = requestUrl.searchParams.get("mimeType") || "";
+        const { contentType, content } = await assets.fetchElsevierObject(eid, mimeType);
 
         response.writeHead(200, {
           "Content-Type": contentType,
@@ -86,7 +88,7 @@ function createApiRoutes(core) {
       pattern: "/api/storage/:storagePath*",
       requiresAuth: true,
       handler: async ({ params, response }) => {
-        await core.servePrivateStorageAsset(decodeURIComponent(params.storagePath || ""), response);
+        await assets.servePrivateStorageAsset(decodeURIComponent(params.storagePath || ""), response);
       },
     },
     {
@@ -94,8 +96,8 @@ function createApiRoutes(core) {
       pattern: "/api/me/annotations",
       requiresAuth: true,
       handler: async ({ currentUser, response }) => {
-        const annotations = await core.getAnnotationsByUserId(currentUser);
-        core.sendJson(response, 200, annotations);
+        const annotations = await speech.getAnnotationsByUserId(currentUser);
+        http.sendJson(response, 200, annotations);
       },
     },
     {
@@ -103,8 +105,8 @@ function createApiRoutes(core) {
       pattern: "/api/me/dashboard",
       requiresAuth: true,
       handler: async ({ currentUser, response }) => {
-        const dashboard = await core.getUserDashboard(currentUser);
-        core.sendJson(response, 200, dashboard);
+        const userDashboard = await dashboard.getForUser(currentUser);
+        http.sendJson(response, 200, userDashboard);
       },
     },
     {
@@ -113,11 +115,13 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, request, response }) => {
         try {
-          const body = await core.readRequestJson(request);
-          await core.changeUserPassword(currentUser.id, body);
-          core.sendJson(response, 200, { ok: true });
+          const body = await http.readJson(request);
+          await users.changePassword(currentUser.id, body);
+          http.sendJson(response, 200, { ok: true });
         } catch (error) {
-          core.sendJson(response, error.statusCode || 400, { error: error.message || "修改密码失败" });
+          http.sendJson(response, error.statusCode || 400, {
+            error: error.message || "修改密码失败",
+          });
         }
       },
     },
@@ -127,11 +131,13 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, request, response }) => {
         try {
-          const body = await core.readRequestJson(request);
-          const user = await core.changeUsername(currentUser.id, body);
-          core.sendJson(response, 200, { ok: true, user });
+          const body = await http.readJson(request);
+          const user = await users.changeUsername(currentUser.id, body);
+          http.sendJson(response, 200, { ok: true, user });
         } catch (error) {
-          core.sendJson(response, error.statusCode || 400, { error: error.message || "修改用户名失败" });
+          http.sendJson(response, error.statusCode || 400, {
+            error: error.message || "修改用户名失败",
+          });
         }
       },
     },
@@ -141,12 +147,12 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, request, response }) => {
         try {
-          core.assertAdminUser(currentUser);
-          const body = await core.readRequestJson(request);
-          const user = await core.createMemberUser(body);
-          core.sendJson(response, 201, { ok: true, user });
+          users.assertAdmin(currentUser);
+          const body = await http.readJson(request);
+          const user = await users.createMemberUser(body);
+          http.sendJson(response, 201, { ok: true, user });
         } catch (error) {
-          core.sendJson(response, error.statusCode || 400, { error: error.message || "创建用户失败" });
+          http.sendJson(response, error.statusCode || 400, { error: error.message || "创建用户失败" });
         }
       },
     },
@@ -156,16 +162,18 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
         try {
-          core.assertAdminUser(currentUser);
+          users.assertAdmin(currentUser);
           const targetUserId = decodeURIComponent(params.userId || "");
-          const result = await core.transferAdminRole(currentUser.id, targetUserId);
-          core.sendJson(response, 200, {
+          const result = await users.transferAdminRole(currentUser.id, targetUserId);
+          http.sendJson(response, 200, {
             ok: true,
             currentUser: result.currentUser,
             targetUser: result.targetUser,
           });
         } catch (error) {
-          core.sendJson(response, error.statusCode || 400, { error: error.message || "转让管理员失败" });
+          http.sendJson(response, error.statusCode || 400, {
+            error: error.message || "转让管理员失败",
+          });
         }
       },
     },
@@ -174,8 +182,8 @@ function createApiRoutes(core) {
       pattern: "/api/users",
       requiresAuth: true,
       handler: async ({ response }) => {
-        const users = await core.listUsersWithStats();
-        core.sendJson(response, 200, users);
+        const allUsers = await dashboard.listUsersWithStats();
+        http.sendJson(response, 200, allUsers);
       },
     },
     {
@@ -184,13 +192,13 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, params, requestUrl, response }) => {
         try {
-          core.assertAdminUser(currentUser);
+          users.assertAdmin(currentUser);
           const userId = decodeURIComponent(params.userId || "");
           const purgeContent = requestUrl.searchParams.get("purgeContent") === "1";
-          const result = await core.deleteUserById(currentUser.id, userId, { purgeContent });
-          core.sendJson(response, 200, { ok: true, ...result });
+          const result = await users.deleteById(currentUser.id, userId, { purgeContent });
+          http.sendJson(response, 200, { ok: true, ...result });
         } catch (error) {
-          core.sendJson(response, error.statusCode || 400, { error: error.message || "删除用户失败" });
+          http.sendJson(response, error.statusCode || 400, { error: error.message || "删除用户失败" });
         }
       },
     },
@@ -200,8 +208,8 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ params, response }) => {
         const userId = decodeURIComponent(params.userId || "");
-        const profile = await core.getPublicUserProfile(userId);
-        core.sendJson(response, 200, profile);
+        const profile = await dashboard.getPublicUserProfile(userId);
+        http.sendJson(response, 200, profile);
       },
     },
     {
@@ -209,16 +217,10 @@ function createApiRoutes(core) {
       pattern: "/api/status",
       requiresAuth: true,
       handler: async ({ response }) => {
-        const [paperCount, annotationCount, discussionCount] = await Promise.all([
-          core.getJsonCollectionLength(core.PAPERS_FILE),
-          core.getJsonCollectionLength(core.ANNOTATIONS_FILE),
-          core.getJsonCollectionLength(core.DISCUSSIONS_FILE),
-        ]);
-        core.sendJson(response, 200, {
+        const stats = await system.getCollectionStats();
+        http.sendJson(response, 200, {
           ok: true,
-          paperCount,
-          annotationCount,
-          discussionCount,
+          ...stats,
         });
       },
     },
@@ -227,8 +229,8 @@ function createApiRoutes(core) {
       pattern: "/api/papers",
       requiresAuth: true,
       handler: async ({ response }) => {
-        const papers = await core.listPapersWithActivity();
-        core.sendJson(response, 200, papers);
+        const allPapers = await papers.listWithActivity();
+        http.sendJson(response, 200, allPapers);
       },
     },
     {
@@ -236,17 +238,17 @@ function createApiRoutes(core) {
       pattern: "/api/papers",
       requiresAuth: true,
       handler: async ({ currentUser, request, response }) => {
-        const body = await core.readRequestJson(request);
+        const body = await http.readJson(request);
         const sourceUrl = String(body.sourceUrl || "").trim();
         const elsevierApiKey = String(body.elsevierApiKey || "").trim();
 
         if (!sourceUrl) {
-          core.sendJson(response, 400, { error: "缺少 sourceUrl" });
+          http.sendJson(response, 400, { error: "缺少 sourceUrl" });
           return;
         }
 
-        const paper = await core.fetchAndStorePaper(sourceUrl, currentUser, { elsevierApiKey });
-        core.sendJson(response, 201, paper);
+        const paper = await papers.fetchAndStore(sourceUrl, currentUser, { elsevierApiKey });
+        http.sendJson(response, 201, paper);
       },
     },
     {
@@ -254,25 +256,25 @@ function createApiRoutes(core) {
       pattern: "/api/papers/import-html",
       requiresAuth: true,
       handler: async ({ currentUser, request, response }) => {
-        const body = await core.readRequestJson(request);
+        const body = await http.readJson(request);
         const sourceUrl = String(body.sourceUrl || "").trim();
         const rawHtml = String(body.rawHtml || "");
         const elsevierApiKey = String(body.elsevierApiKey || "").trim();
 
         if (!sourceUrl) {
-          core.sendJson(response, 400, { error: "缺少 sourceUrl" });
+          http.sendJson(response, 400, { error: "缺少 sourceUrl" });
           return;
         }
 
         if (!rawHtml.trim()) {
-          core.sendJson(response, 400, { error: "缺少 rawHtml" });
+          http.sendJson(response, 400, { error: "缺少 rawHtml" });
           return;
         }
 
-        const paper = await core.importPaperFromHtml(sourceUrl, rawHtml, currentUser, {
+        const paper = await papers.importFromHtml(sourceUrl, rawHtml, currentUser, {
           elsevierApiKey,
         });
-        core.sendJson(response, 201, paper);
+        http.sendJson(response, 201, paper);
       },
     },
     {
@@ -281,23 +283,8 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ params, response }) => {
         const paperId = decodeURIComponent(params.paperId || "");
-        const paper = await core.getPaperById(paperId);
-
-        if (!paper) {
-          core.sendJson(response, 404, { error: "文献不存在" });
-          return;
-        }
-
-        if (!paper.snapshotPath) {
-          core.sendJson(response, 404, { error: "当前文献没有网页快照" });
-          return;
-        }
-
-        const snapshotPath = core.path.join(core.STORAGE_DIR, paper.snapshotPath);
-        const rawHtml = await core.fs.readFile(snapshotPath, "utf8");
-        core.sendJson(response, 200, {
-          rawHtml: core.enforceSnapshotArticleImagePolicy(rawHtml, paper.sourceUrl),
-        });
+        const snapshot = await papers.readSnapshotContent(paperId);
+        http.sendJson(response, 200, snapshot);
       },
     },
     {
@@ -306,15 +293,15 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ params, response }) => {
         const paperId = decodeURIComponent(params.paperId || "");
-        const paper = await core.getPaperById(paperId);
+        const paper = await papers.getById(paperId);
 
         if (!paper) {
-          core.sendJson(response, 404, { error: "文献不存在" });
+          http.sendJson(response, 404, { error: "文献不存在" });
           return;
         }
 
-        const annotations = await core.getAnnotationsByPaperId(paperId);
-        core.sendJson(response, 200, annotations);
+        const annotations = await speech.getAnnotationsByPaperId(paperId);
+        http.sendJson(response, 200, annotations);
       },
     },
     {
@@ -323,16 +310,16 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
         const paperId = decodeURIComponent(params.paperId || "");
-        const paper = await core.getPaperById(paperId);
+        const paper = await papers.getById(paperId);
 
         if (!paper) {
-          core.sendJson(response, 404, { error: "文献不存在" });
+          http.sendJson(response, 404, { error: "文献不存在" });
           return;
         }
 
-        const body = await core.readSpeechMutationBody(request);
-        const annotation = await core.saveAnnotation(paperId, body, currentUser);
-        core.sendJson(response, 201, annotation);
+        const body = await speech.readMutationBody(request);
+        const annotation = await speech.saveAnnotation(paperId, body, currentUser);
+        http.sendJson(response, 201, annotation);
       },
     },
     {
@@ -341,15 +328,15 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
         const paperId = decodeURIComponent(params.paperId || "");
-        const paper = await core.getPaperById(paperId);
+        const paper = await papers.getById(paperId);
 
         if (!paper) {
-          core.sendJson(response, 404, { error: "文献不存在" });
+          http.sendJson(response, 404, { error: "文献不存在" });
           return;
         }
 
-        const deletedCount = await core.clearAnnotationsByPaperId(paperId, currentUser);
-        core.sendJson(response, 200, { ok: true, deletedCount });
+        const deletedCount = await speech.clearAnnotationsByPaperId(paperId, currentUser);
+        http.sendJson(response, 200, { ok: true, deletedCount });
       },
     },
     {
@@ -358,15 +345,15 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ params, response }) => {
         const paperId = decodeURIComponent(params.paperId || "");
-        const paper = await core.getPaperById(paperId);
+        const paper = await papers.getById(paperId);
 
         if (!paper) {
-          core.sendJson(response, 404, { error: "文献不存在" });
+          http.sendJson(response, 404, { error: "文献不存在" });
           return;
         }
 
-        const discussions = await core.getDiscussionsByPaperId(paperId);
-        core.sendJson(response, 200, discussions);
+        const discussions = await speech.getDiscussionsByPaperId(paperId);
+        http.sendJson(response, 200, discussions);
       },
     },
     {
@@ -375,16 +362,16 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
         const paperId = decodeURIComponent(params.paperId || "");
-        const paper = await core.getPaperById(paperId);
+        const paper = await papers.getById(paperId);
 
         if (!paper) {
-          core.sendJson(response, 404, { error: "文献不存在" });
+          http.sendJson(response, 404, { error: "文献不存在" });
           return;
         }
 
-        const body = await core.readSpeechMutationBody(request);
-        const discussion = await core.saveDiscussion(paperId, body, currentUser);
-        core.sendJson(response, 201, discussion);
+        const body = await speech.readMutationBody(request);
+        const discussion = await speech.saveDiscussion(paperId, body, currentUser);
+        http.sendJson(response, 201, discussion);
       },
     },
     {
@@ -393,14 +380,14 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ params, response }) => {
         const paperId = decodeURIComponent(params.paperId || "");
-        const paper = await core.getPaperById(paperId);
+        const paper = await papers.getById(paperId);
 
         if (!paper) {
-          core.sendJson(response, 404, { error: "文献不存在" });
+          http.sendJson(response, 404, { error: "文献不存在" });
           return;
         }
 
-        core.sendJson(response, 200, paper);
+        http.sendJson(response, 200, paper);
       },
     },
     {
@@ -409,8 +396,8 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
         const paperId = decodeURIComponent(params.paperId || "");
-        const result = await core.deletePaperById(paperId, currentUser);
-        core.sendJson(response, 200, result);
+        const result = await papers.deleteById(paperId, currentUser);
+        http.sendJson(response, 200, result);
       },
     },
     {
@@ -420,12 +407,12 @@ function createApiRoutes(core) {
       handler: async ({ currentUser, params, request, response }) => {
         try {
           const annotationId = decodeURIComponent(params.annotationId || "");
-          const body = await core.readSpeechMutationBody(request);
-          const reply = await core.saveAnnotationReply(annotationId, body, currentUser);
-          core.sendJson(response, 201, reply);
+          const body = await speech.readMutationBody(request);
+          const reply = await speech.saveAnnotationReply(annotationId, body, currentUser);
+          http.sendJson(response, 201, reply);
         } catch (error) {
           const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 400;
-          core.sendJson(response, statusCode, { error: error.message || "回复批注失败" });
+          http.sendJson(response, statusCode, { error: error.message || "回复批注失败" });
         }
       },
     },
@@ -436,12 +423,12 @@ function createApiRoutes(core) {
       handler: async ({ currentUser, params, request, response }) => {
         try {
           const annotationId = decodeURIComponent(params.annotationId || "");
-          const body = await core.readSpeechMutationBody(request);
-          const annotation = await core.updateAnnotationById(annotationId, body, currentUser);
-          core.sendJson(response, 200, annotation);
+          const body = await speech.readMutationBody(request);
+          const annotation = await speech.updateAnnotationById(annotationId, body, currentUser);
+          http.sendJson(response, 200, annotation);
         } catch (error) {
           const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 400;
-          core.sendJson(response, statusCode, { error: error.message || "编辑批注失败" });
+          http.sendJson(response, statusCode, { error: error.message || "编辑批注失败" });
         }
       },
     },
@@ -451,8 +438,8 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
         const annotationId = decodeURIComponent(params.annotationId || "");
-        const result = await core.deleteAnnotationById(annotationId, currentUser);
-        core.sendJson(response, 200, result);
+        const result = await speech.deleteAnnotationById(annotationId, currentUser);
+        http.sendJson(response, 200, result);
       },
     },
     {
@@ -462,12 +449,12 @@ function createApiRoutes(core) {
       handler: async ({ currentUser, params, request, response }) => {
         try {
           const discussionId = decodeURIComponent(params.discussionId || "");
-          const body = await core.readSpeechMutationBody(request);
-          const reply = await core.saveDiscussionReply(discussionId, body, currentUser);
-          core.sendJson(response, 201, reply);
+          const body = await speech.readMutationBody(request);
+          const reply = await speech.saveDiscussionReply(discussionId, body, currentUser);
+          http.sendJson(response, 201, reply);
         } catch (error) {
           const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 400;
-          core.sendJson(response, statusCode, { error: error.message || "回复讨论失败" });
+          http.sendJson(response, statusCode, { error: error.message || "回复讨论失败" });
         }
       },
     },
@@ -478,12 +465,12 @@ function createApiRoutes(core) {
       handler: async ({ currentUser, params, request, response }) => {
         try {
           const discussionId = decodeURIComponent(params.discussionId || "");
-          const body = await core.readSpeechMutationBody(request);
-          const discussion = await core.updateDiscussionById(discussionId, body, currentUser);
-          core.sendJson(response, 200, discussion);
+          const body = await speech.readMutationBody(request);
+          const discussion = await speech.updateDiscussionById(discussionId, body, currentUser);
+          http.sendJson(response, 200, discussion);
         } catch (error) {
           const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 400;
-          core.sendJson(response, statusCode, { error: error.message || "编辑讨论失败" });
+          http.sendJson(response, statusCode, { error: error.message || "编辑讨论失败" });
         }
       },
     },
@@ -493,8 +480,8 @@ function createApiRoutes(core) {
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
         const discussionId = decodeURIComponent(params.discussionId || "");
-        const result = await core.deleteDiscussionById(discussionId, currentUser);
-        core.sendJson(response, 200, result);
+        const result = await speech.deleteDiscussionById(discussionId, currentUser);
+        http.sendJson(response, 200, result);
       },
     },
   ];
