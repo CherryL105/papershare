@@ -143,6 +143,8 @@ async function start() {
 }
 
 function createHttpServer() {
+  ensureAppRouter();
+
   return http.createServer(async (request, response) => {
     try {
       await routeRequest(request, response);
@@ -160,9 +162,17 @@ function createHttpServer() {
   });
 }
 
-async function routeRequest(request, response) {
+function ensureAppRouter() {
   if (!appRouter) {
     appRouter = createRouter(createRouteServices());
+  }
+
+  return appRouter;
+}
+
+async function routeRequest(request, response) {
+  if (!appRouter) {
+    throw new Error("App router has not been initialized");
   }
 
   return appRouter(request, response);

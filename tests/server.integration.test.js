@@ -676,6 +676,20 @@ describe("SQLite migration and API flows", () => {
     expect(papersResponse.body[0].latestSpeakerUsername).toBe("admin");
   });
 
+  it("serves the first request after createHttpServer initializes the router", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+
+    const response = await request(app).post("/api/auth/login").send({
+      username: "admin",
+      password: "1234",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.user.username).toBe("admin");
+  });
+
   it("keeps the main collaboration flow working against sqlite-backed storage", async () => {
     const storageDir = await createStorageDir();
     const core = await loadCoreForStorage(storageDir);
