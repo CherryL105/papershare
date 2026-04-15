@@ -3112,7 +3112,8 @@ async function ensureDefaultUsers() {
 
 async function serveStaticAsset(pathname, response) {
   const targetPath = pathname === "/" ? "/index.html" : pathname;
-  const normalizedPath = path.normalize(decodeURIComponent(targetPath)).replace(/^(\.\.[/\\])+/, "");
+  const relativeTargetPath = decodeURIComponent(targetPath).replace(/^[/\\]+/, "");
+  const normalizedPath = path.normalize(relativeTargetPath).replace(/^(\.\.[/\\])+/, "");
   const absolutePath = path.join(ROOT_DIR, normalizedPath);
 
   if (!absolutePath.startsWith(ROOT_DIR) || isForbiddenStaticPath(normalizedPath)) {

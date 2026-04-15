@@ -1,7 +1,16 @@
 {
   "name": "papershare",
   "version": "1.0.0",
+  "license": "MIT",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CherryL105/papershare.git"
+  },
+  "homepage": "https://github.com/CherryL105/papershare",
+  "bugs": {
+    "url": "https://github.com/CherryL105/papershare/issues"
+  },
   "scripts": {
     "start": "node server.js"
   },

@@ -1,0 +1,17 @@
+services:
+  papershare:
+    build:
+      context: .
+    container_name: papershare
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    environment:
+      PORT: ${PORT:-3000}
+      PAPERSHARE_STORAGE_DIR: /data
+      ELSEVIER_API_KEY: ${ELSEVIER_API_KEY:-}
+    volumes:
+      - papershare_data:/data
+
+volumes:
+  papershare_data:

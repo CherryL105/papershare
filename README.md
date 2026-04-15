@@ -2,6 +2,8 @@
 
 PaperShare 是一个用于**收集论文、批注论文和团队讨论**的轻量级 Node.js 应用。
 
+GitHub 仓库地址：<https://github.com/CherryL105/papershare>
+
 可以从GitHub下载，部署在Linux、Windows、MacOS上。Linux还可以通过Docker镜像直接拉取到本地。
 
 ## 界面展示
@@ -277,3 +279,7 @@ docker run -d \
 ```
 
 如果数据保存在 `papershare_data` volume 中，升级后原有数据会保留。
+
+## License
+
+本项目采用 [MIT License](LICENSE)。
