@@ -1,13 +1,26 @@
-FROM node:20-alpine
+FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci
 
 COPY . .
+RUN npm run build && npm prune --omit=dev
 
-RUN mkdir -p /data && chown -R node:node /app /data
+FROM node:24-bookworm-slim
+
+WORKDIR /app
+
+COPY --from=build /app/package.json /app/package-lock.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/server.js ./server.js
+COPY --from=build /app/src ./src
+COPY --from=build /app/shared ./shared
+COPY --from=build /app/LICENSE ./LICENSE
+
+RUN mkdir -p /data && chown -R node:node /app /data && npm cache clean --force
 
 ENV NODE_ENV=production
 ENV PORT=3000
