@@ -283,7 +283,7 @@ async function storePaperSnapshot(sourceUrl, rawHtml, currentUser) {
 
 async function getPaperBySourceUrl(sourceUrl) {
   const paper = SQLITE_STORE.papers.getBySourceUrl(sourceUrl);
-  return paper ? normalizePaperRecord(cloneJsonValue(paper)) : null;
+  return paper ? normalizePaperRecord(paper) : null;
 }
 
 function buildDuplicatePaperMessage(existingPaper) {
@@ -2076,29 +2076,29 @@ function deleteOwnedSpeechRecordsFromStore(repository, ownedRecords, options) {
 
 async function getPaperById(paperId) {
   const paper = SQLITE_STORE.papers.getById(paperId);
-  return paper ? normalizePaperRecord(cloneJsonValue(paper)) : null;
+  return paper ? normalizePaperRecord(paper) : null;
 }
 
 async function getAnnotationById(annotationId) {
   const annotation = SQLITE_STORE.annotations.getById(annotationId);
-  return annotation ? normalizeAnnotationRecord(cloneJsonValue(annotation)) : null;
+  return annotation ? normalizeAnnotationRecord(annotation) : null;
 }
 
 async function getDiscussionById(discussionId) {
   const discussion = SQLITE_STORE.discussions.getById(discussionId);
-  return discussion ? normalizeDiscussionRecord(cloneJsonValue(discussion)) : null;
+  return discussion ? normalizeDiscussionRecord(discussion) : null;
 }
 
 async function getAnnotationsByPaperId(paperId) {
-  return SQLITE_STORE.annotations.listByPaperId(paperId).map((annotation) =>
-    normalizeAnnotationRecord(cloneJsonValue(annotation))
-  );
+  return SQLITE_STORE.annotations
+    .listByPaperId(paperId)
+    .map((annotation) => normalizeAnnotationRecord(annotation));
 }
 
 async function getDiscussionsByPaperId(paperId) {
-  return SQLITE_STORE.discussions.listByPaperId(paperId).map((discussion) =>
-    normalizeDiscussionRecord(cloneJsonValue(discussion))
-  );
+  return SQLITE_STORE.discussions
+    .listByPaperId(paperId)
+    .map((discussion) => normalizeDiscussionRecord(discussion));
 }
 
 async function getAnnotationsByUserId(currentUser) {
@@ -2862,15 +2862,15 @@ async function clearAnnotationsByPaperId(paperId, currentUser) {
 }
 
 async function readAnnotations() {
-  return SQLITE_STORE.annotations.listAll().map((annotation) =>
-    normalizeAnnotationRecord(cloneJsonValue(annotation))
-  );
+  return SQLITE_STORE.annotations
+    .listAll()
+    .map((annotation) => normalizeAnnotationRecord(annotation));
 }
 
 async function readDiscussions() {
-  return SQLITE_STORE.discussions.listAll().map((discussion) =>
-    normalizeDiscussionRecord(cloneJsonValue(discussion))
-  );
+  return SQLITE_STORE.discussions
+    .listAll()
+    .map((discussion) => normalizeDiscussionRecord(discussion));
 }
 
 async function ensureStorageFiles() {
@@ -3197,13 +3197,13 @@ function sendJson(response, statusCode, payload, headers = {}) {
 }
 
 async function readPapers() {
-  return SQLITE_STORE.papers.listAll().map((paper) => normalizePaperRecord(cloneJsonValue(paper)));
+  return SQLITE_STORE.papers.listAll().map((paper) => normalizePaperRecord(paper));
 }
 
 async function listPapersWithActivity() {
   return SQLITE_STORE.papers
     .listWithActivity()
-    .map((paper) => normalizePaperRecord(cloneJsonValue(paper)));
+    .map((paper) => normalizePaperRecord(paper));
 }
 
 function normalizePaperRecord(paper) {
@@ -4442,18 +4442,6 @@ function applyCorsHeaders(request, response) {
   response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   response.setHeader("Vary", "Origin");
-}
-
-function cloneJsonValue(value) {
-  if (value === null || value === undefined || typeof value !== "object") {
-    return value;
-  }
-
-  if (typeof structuredClone === "function") {
-    return structuredClone(value);
-  }
-
-  return JSON.parse(JSON.stringify(value));
 }
 
 function resolveStaticCacheControl(normalizedPath, fileExtension) {
