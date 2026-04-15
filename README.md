@@ -78,7 +78,10 @@ npm install
 
 这一步会根据 `package.json` / `package-lock.json` 自动安装当前项目依赖，包括：
 
+- `better-sqlite3`
+- `busboy`
 - `fast-xml-parser`
+- `preact`
 - `temml`
 
 ### 3. 设置环境参数：
@@ -88,6 +91,7 @@ npm install
 ```bash
 ELSEVIER_API_KEY=你的Elsevier API key
 PAPERSHARE_STORAGE_DIR=你希望的存储地址
+PAPERSHARE_ALLOWED_ORIGINS=https://你的前端域名
 PORT=你的端口
 ```
 - `ELSEVIER_API_KEY`建议填写，用于抓取Elsevier文章的正文和Figure。但留空时仍可通过复制文章页面源代码的方式抓取标题、作者、摘要等基础信息。
@@ -100,6 +104,10 @@ PORT=你的端口
     - 不要提交 `.local/`。
     - 不要提交 `.env`。
 
+- `PAPERSHARE_ALLOWED_ORIGINS` 只在前端与服务端跨域部署时需要填写，多个来源可用英文逗号分隔。不填时浏览器默认只允许同源访问。
+
+- 运行时唯一的数据源是 SQLite 数据库 `papershare.sqlite`。旧的 `papers.json` / `annotations.json` / `discussions.json` / `users.json` / `sessions.json` 只会在首次启动时用于迁移导入并备份，不再作为日常读写路径。
+
 ### 4. 启动服务：
 
 **(1)** 开放端口
@@ -108,6 +116,9 @@ PORT=你的端口
 npm start
 ```
 注：如果远程连接服务器，想在关闭终端后仍保持端口开放，请使用`pm2`，而非`npm start`。
+
+- 前端页面源码位于 `src/client/`，其中 `src/client/catalog/index.html` 和 `src/client/detail/paper.html` 是 Vite 多页入口。
+- `dist/` 目录只是构建输出，服务端实际只读取 `dist/`；不要直接修改 `dist/` 里的文件。
 
 - 安装
     ```bash
