@@ -782,6 +782,45 @@ describe("SQLite migration and API flows", () => {
     expect(statusResponse.body.discussionCount).toBe(2);
   });
 
+  it("rehashes newly created users with async scrypt and honors password changes", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+    await createMemberUser(admin, "password-member", "old-pass");
+
+    const member = request.agent(app);
+    await loginAs(member, "password-member", "old-pass");
+
+    const changePasswordResponse = await member.post("/api/me/password").send({
+      currentPassword: "old-pass",
+      nextPassword: "new-pass",
+    });
+    expect(changePasswordResponse.status).toBe(200);
+
+    const oldPasswordLoginResponse = await request(app).post("/api/auth/login").send({
+      username: "password-member",
+      password: "old-pass",
+    });
+    expect(oldPasswordLoginResponse.status).toBe(401);
+
+    const newPasswordLoginResponse = await request(app).post("/api/auth/login").send({
+      username: "password-member",
+      password: "new-pass",
+    });
+    expect(newPasswordLoginResponse.status).toBe(200);
+
+    const db = new Database(path.join(storageDir, "papershare.sqlite"), { readonly: true });
+    const updatedUser = db
+      .prepare("SELECT password_hash AS passwordHash FROM users WHERE username = ?")
+      .get("password-member");
+
+    expect(updatedUser.passwordHash.startsWith("scrypt$")).toBe(true);
+    db.close();
+  });
+
   it("recomputes paper activity after username changes and speech deletions", async () => {
     const storageDir = await createStorageDir();
     const core = await loadCoreForStorage(storageDir);

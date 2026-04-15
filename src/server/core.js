@@ -3,6 +3,7 @@ const fsSync = require("fs");
 const fs = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
+const { promisify } = require("util");
 const Busboy = require("busboy");
 const { XMLParser } = require("fast-xml-parser");
 const { createRouter } = require("./router");
@@ -97,6 +98,7 @@ const EXTENSION_BY_MIME_TYPE = new Map(
 const STATIC_ASSET_CACHE_CONTROL = "public, max-age=300, must-revalidate";
 const STATIC_HASHED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const STATIC_HTML_CACHE_CONTROL = "no-cache";
+const scryptAsync = promisify(crypto.scrypt);
 const SQLITE_STORE = createSqliteStore({
   storageDir: STORAGE_DIR,
   jsonFilePaths: {
@@ -113,7 +115,7 @@ const DEFAULT_USERS = [
     id: "bootstrap-admin",
     username: "admin",
     role: "admin",
-    passwordHash: hashPassword("1234"),
+    password: "1234",
     createdAt: "2026-04-13T00:00:00.000Z",
   },
 ];
@@ -1673,7 +1675,7 @@ async function loginUser(body) {
   }
 
   let user = SQLITE_STORE.users.getByUsername(username);
-  const passwordVerification = verifyPassword(password, user?.passwordHash);
+  const passwordVerification = await verifyPassword(password, user?.passwordHash);
 
   if (!user || !passwordVerification.ok) {
     throw new Error("用户名或密码错误");
@@ -1685,7 +1687,7 @@ async function loginUser(body) {
   if (passwordVerification.needsRehash) {
     user = {
       ...user,
-      passwordHash: hashPassword(password),
+      passwordHash: await hashPassword(password),
       updatedAt: createdAt,
     };
   }
@@ -1734,13 +1736,13 @@ async function changeUserPassword(userId, body) {
     throw new Error("用户不存在");
   }
 
-  if (!verifyPassword(currentPassword, user.passwordHash).ok) {
+  if (!(await verifyPassword(currentPassword, user.passwordHash)).ok) {
     throw new Error("当前密码错误");
   }
 
   SQLITE_STORE.users.update({
     ...user,
-    passwordHash: hashPassword(nextPassword),
+    passwordHash: await hashPassword(nextPassword),
     updatedAt: new Date().toISOString(),
   });
 }
@@ -1787,7 +1789,7 @@ async function createMemberUser(body) {
     id: createUserId(username),
     username,
     role: "member",
-    passwordHash: hashPassword(password),
+    passwordHash: await hashPassword(password),
     createdAt,
     updatedAt: createdAt,
   };
@@ -2899,7 +2901,12 @@ async function ensureDefaultUsers() {
     const existingUser = usersById.get(defaultUser.id) || usersByUsername.get(defaultUser.username);
 
     if (!existingUser) {
-      SQLITE_STORE.users.insert(defaultUser);
+      const { password, ...defaultUserRecord } = defaultUser;
+
+      SQLITE_STORE.users.insert({
+        ...defaultUserRecord,
+        passwordHash: await hashPassword(password),
+      });
       continue;
     }
 
@@ -4129,13 +4136,13 @@ class HttpError extends Error {
   }
 }
 
-function hashPassword(password) {
+async function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
-  const derivedKey = crypto.scryptSync(String(password), salt, 64).toString("hex");
+  const derivedKey = Buffer.from(await scryptAsync(String(password), salt, 64)).toString("hex");
   return `scrypt$${salt}$${derivedKey}`;
 }
 
-function verifyPassword(password, passwordHash) {
+async function verifyPassword(password, passwordHash) {
   const normalizedHash = String(passwordHash || "").trim();
 
   if (!normalizedHash) {
@@ -4149,7 +4156,7 @@ function verifyPassword(password, passwordHash) {
       return { ok: false, needsRehash: false };
     }
 
-    const derivedKey = crypto.scryptSync(String(password), parts[1], 64);
+    const derivedKey = Buffer.from(await scryptAsync(String(password), parts[1], 64));
     const expectedKey = Buffer.from(parts[2], "hex");
     const ok =
       derivedKey.length === expectedKey.length &&
