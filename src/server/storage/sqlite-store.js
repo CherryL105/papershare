@@ -28,6 +28,9 @@ function createSqliteStore(options) {
   const jsonFilePaths = Object.freeze({ ...(options.jsonFilePaths || {}) });
   let db = null;
   let repositories = null;
+  let schemaState = {
+    addedSpeechCountColumn: false,
+  };
 
   function openDatabase() {
     if (db) {
@@ -37,7 +40,7 @@ function createSqliteStore(options) {
     db = new Database(dbPath);
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = OFF");
-    ensureSchema(db);
+    schemaState = ensureSchema(db);
     repositories = createRepositories(db);
     return db;
   }
@@ -53,7 +56,11 @@ function createSqliteStore(options) {
   async function ensureReady() {
     await fs.mkdir(storageDir, { recursive: true });
     const database = openDatabase();
-    await migrateLegacyJsonIfNeeded(database);
+    const migrationState = await migrateLegacyJsonIfNeeded(database);
+    return {
+      ...schemaState,
+      ...migrationState,
+    };
   }
 
   async function close() {
@@ -90,13 +97,17 @@ function createSqliteStore(options) {
 
   async function migrateLegacyJsonIfNeeded(database) {
     if (!isDatabaseEmpty(database)) {
-      return;
+      return {
+        migratedLegacyJson: false,
+      };
     }
 
     const existingJsonFiles = Object.values(jsonFilePaths).filter((filePath) => fsSync.existsSync(filePath));
 
     if (!existingJsonFiles.length) {
-      return;
+      return {
+        migratedLegacyJson: false,
+      };
     }
 
     const collections = {};
@@ -127,6 +138,10 @@ function createSqliteStore(options) {
         );
       }
     });
+
+    return {
+      migratedLegacyJson: true,
+    };
   }
 
   return {
@@ -303,30 +318,36 @@ function createSessionRepository(db) {
 }
 
 function createPaperRepository(db) {
+  const paperSelectColumns = `
+    json,
+    speech_count,
+    latest_speech_at,
+    latest_speaker_username
+  `;
   const selectAllStatement = db.prepare(`
-    SELECT json
+    SELECT ${paperSelectColumns}
     FROM papers
     ORDER BY COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), NULLIF(fetched_at, '')) DESC, rowid DESC
   `);
   const selectByIdStatement = db.prepare(`
-    SELECT json
+    SELECT ${paperSelectColumns}
     FROM papers
     WHERE id = ?
   `);
   const selectBySourceUrlStatement = db.prepare(`
-    SELECT json
+    SELECT ${paperSelectColumns}
     FROM papers
     WHERE source_url = ?
   `);
   const selectByUserStatement = db.prepare(`
-    SELECT json
+    SELECT ${paperSelectColumns}
     FROM papers
     WHERE created_by_user_id = ?
       OR (created_by_user_id = '' AND created_by_username = ?)
     ORDER BY COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), NULLIF(fetched_at, '')) DESC, rowid DESC
   `);
   const selectByCreatedByUserIdStatement = db.prepare(`
-    SELECT json
+    SELECT ${paperSelectColumns}
     FROM papers
     WHERE created_by_user_id = ?
     ORDER BY rowid ASC
@@ -343,6 +364,7 @@ function createPaperRepository(db) {
       fetched_at = @fetched_at,
       snapshot_path = @snapshot_path,
       title = @title,
+      speech_count = @speech_count,
       latest_speech_at = @latest_speech_at,
       latest_speaker_username = @latest_speaker_username,
       json = @json
@@ -353,7 +375,58 @@ function createPaperRepository(db) {
     WHERE id = ?
   `);
   const countStatement = db.prepare(`SELECT COUNT(*) AS count FROM papers`);
-  const listWithActivityStatement = db.prepare(`
+  const selectListWithActivityStatement = db.prepare(`
+    SELECT ${paperSelectColumns}
+    FROM papers
+    ORDER BY COALESCE(
+      NULLIF(latest_speech_at, ''),
+      NULLIF(updated_at, ''),
+      NULLIF(created_at, ''),
+      NULLIF(fetched_at, '')
+    ) DESC, rowid DESC
+  `);
+  const selectActivityForRefreshStatement = db.prepare(`
+    SELECT
+      ? AS paper_id,
+      (
+        SELECT COUNT(*)
+        FROM annotations
+        WHERE annotations.paper_id = ?
+      ) + (
+        SELECT COUNT(*)
+        FROM discussions
+        WHERE discussions.paper_id = ?
+      ) AS speech_count,
+      COALESCE((
+        SELECT speech.created_at
+        FROM (
+          SELECT created_at, rowid
+          FROM annotations
+          WHERE paper_id = ?
+          UNION ALL
+          SELECT created_at, rowid
+          FROM discussions
+          WHERE paper_id = ?
+        ) AS speech
+        ORDER BY speech.created_at DESC, speech.rowid DESC
+        LIMIT 1
+      ), '') AS latest_speech_at,
+      COALESCE((
+        SELECT speech.created_by_username
+        FROM (
+          SELECT created_at, created_by_username, rowid
+          FROM annotations
+          WHERE paper_id = ?
+          UNION ALL
+          SELECT created_at, created_by_username, rowid
+          FROM discussions
+          WHERE paper_id = ?
+        ) AS speech
+        ORDER BY speech.created_at DESC, speech.rowid DESC
+        LIMIT 1
+      ), '') AS latest_speaker_username
+  `);
+  const listComputedActivityStatement = db.prepare(`
     SELECT
       papers.json AS json,
       (
@@ -415,6 +488,89 @@ function createPaperRepository(db) {
     ) DESC, papers.rowid DESC
   `);
 
+  function hydratePaperRow(row) {
+    if (!row) {
+      return null;
+    }
+
+    return {
+      ...parseJsonRow(row),
+      latestSpeakerUsername: normalizeText(row.latest_speaker_username),
+      latestSpeechAt: normalizeText(row.latest_speech_at),
+      speechCount: Number(row.speech_count || 0),
+    };
+  }
+
+  function computeActivitySnapshot(paperId) {
+    const normalizedPaperId = normalizeText(paperId);
+
+    if (!normalizedPaperId) {
+      return {
+        latestSpeakerUsername: "",
+        latestSpeechAt: "",
+        speechCount: 0,
+      };
+    }
+
+    const row = selectActivityForRefreshStatement.get(
+      normalizedPaperId,
+      normalizedPaperId,
+      normalizedPaperId,
+      normalizedPaperId,
+      normalizedPaperId,
+      normalizedPaperId,
+      normalizedPaperId
+    );
+
+    return {
+      latestSpeakerUsername: normalizeText(row?.latest_speaker_username),
+      latestSpeechAt: normalizeText(row?.latest_speech_at),
+      speechCount: Number(row?.speech_count || 0),
+    };
+  }
+
+  function updateStoredPaper(paper) {
+    updateStatement.run(buildRecordParams(TABLES.PAPERS, paper));
+    return paper;
+  }
+
+  function refreshActivityById(paperId) {
+    const normalizedPaperId = normalizeText(paperId);
+
+    if (!normalizedPaperId) {
+      return null;
+    }
+
+    const paper = hydratePaperRow(selectByIdStatement.get(normalizedPaperId));
+
+    if (!paper) {
+      return null;
+    }
+
+    return updateStoredPaper({
+      ...paper,
+      ...computeActivitySnapshot(normalizedPaperId),
+    });
+  }
+
+  function listByIdsWithStoredActivity(paperIds) {
+    const normalizedIds = Array.from(
+      new Set((Array.isArray(paperIds) ? paperIds : []).map((paperId) => normalizeText(paperId)).filter(Boolean))
+    );
+
+    if (!normalizedIds.length) {
+      return [];
+    }
+
+    const placeholders = normalizedIds.map(() => "?").join(", ");
+    const rows = db
+      .prepare(
+        `SELECT ${paperSelectColumns} FROM papers WHERE id IN (${placeholders})`
+      )
+      .all(...normalizedIds);
+    return rows.map((row) => hydratePaperRow(row));
+  }
+
   return {
     countAll() {
       return Number(countStatement.get()?.count || 0);
@@ -426,48 +582,61 @@ function createPaperRepository(db) {
       return deleteByIds(db, TABLES.PAPERS, "id", paperIds);
     },
     getById(paperId) {
-      return parseJsonRow(selectByIdStatement.get(normalizeText(paperId)));
+      return hydratePaperRow(selectByIdStatement.get(normalizeText(paperId)));
     },
     getBySourceUrl(sourceUrl) {
-      return parseJsonRow(selectBySourceUrlStatement.get(normalizeText(sourceUrl)));
+      return hydratePaperRow(selectBySourceUrlStatement.get(normalizeText(sourceUrl)));
     },
     insert(paper) {
       insertStatement.run(buildRecordParams(TABLES.PAPERS, paper));
       return paper;
     },
     listAll() {
-      return parseJsonRows(selectAllStatement.all());
+      return selectAllStatement.all().map((row) => hydratePaperRow(row));
     },
     listByIds(paperIds) {
-      return listByIds(db, TABLES.PAPERS, paperIds);
+      return listByIdsWithStoredActivity(paperIds);
     },
     listByUser(userId, username) {
-      return parseJsonRows(selectByUserStatement.all(normalizeText(userId), normalizeText(username)));
+      return selectByUserStatement
+        .all(normalizeText(userId), normalizeText(username))
+        .map((row) => hydratePaperRow(row));
     },
     listByUserId(userId) {
-      return parseJsonRows(selectByCreatedByUserIdStatement.all(normalizeText(userId)));
+      return selectByCreatedByUserIdStatement
+        .all(normalizeText(userId))
+        .map((row) => hydratePaperRow(row));
     },
     listWithActivity() {
-      return listWithActivityStatement.all().map((row) => ({
-        ...parseJsonRow(row),
-        latestSpeakerUsername: String(row?.latest_speaker_username || "").trim(),
-        latestSpeechAt: String(row?.latest_speech_at || "").trim(),
-        speechCount: Number(row?.speech_count || 0),
-      }));
+      return selectListWithActivityStatement.all().map((row) => hydratePaperRow(row));
+    },
+    backfillActivityFields() {
+      const papers = listComputedActivityStatement.all().map((row) => hydratePaperRow(row));
+      papers.forEach((paper) => {
+        updateStoredPaper(paper);
+      });
+      return papers;
+    },
+    refreshActivityById(paperId) {
+      return refreshActivityById(paperId);
+    },
+    refreshActivitiesByIds(paperIds) {
+      return Array.from(
+        new Set((Array.isArray(paperIds) ? paperIds : []).map((paperId) => normalizeText(paperId)).filter(Boolean))
+      ).map((paperId) => refreshActivityById(paperId));
     },
     update(paper) {
-      updateStatement.run(buildRecordParams(TABLES.PAPERS, paper));
-      return paper;
+      return updateStoredPaper(paper);
     },
     updateCreatedByUsername(userId, username) {
-      const papers = parseJsonRows(selectByCreatedByUserIdStatement.all(normalizeText(userId)));
+      const papers = selectByCreatedByUserIdStatement
+        .all(normalizeText(userId))
+        .map((row) => hydratePaperRow(row));
       papers.forEach((paper) => {
-        updateStatement.run(
-          buildRecordParams(TABLES.PAPERS, {
-            ...paper,
-            created_by_username: username,
-          })
-        );
+        updateStoredPaper({
+          ...paper,
+          created_by_username: username,
+        });
       });
       return papers.length;
     },
@@ -639,6 +808,7 @@ function ensureSchema(db) {
       fetched_at TEXT,
       snapshot_path TEXT,
       title TEXT,
+      speech_count INTEGER NOT NULL DEFAULT 0,
       latest_speech_at TEXT,
       latest_speaker_username TEXT,
       json TEXT NOT NULL
@@ -682,6 +852,24 @@ function ensureSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_discussions_parent_discussion_id ON discussions (parent_discussion_id);
     CREATE INDEX IF NOT EXISTS idx_discussions_created_by_user_id ON discussions (created_by_user_id);
   `);
+
+  return {
+    addedSpeechCountColumn: ensureTableColumn(db, "papers", "speech_count", () => {
+      db.exec("ALTER TABLE papers ADD COLUMN speech_count INTEGER NOT NULL DEFAULT 0");
+    }),
+  };
+}
+
+function ensureTableColumn(db, tableName, columnName, addColumn) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  const exists = columns.some((column) => normalizeText(column?.name) === columnName);
+
+  if (exists) {
+    return false;
+  }
+
+  addColumn();
+  return true;
 }
 
 function resolveTableName(filePath) {
@@ -759,6 +947,7 @@ function createInsertStatement(tableName) {
         fetched_at,
         snapshot_path,
         title,
+        speech_count,
         latest_speech_at,
         latest_speaker_username,
         json
@@ -773,6 +962,7 @@ function createInsertStatement(tableName) {
         @fetched_at,
         @snapshot_path,
         @title,
+        @speech_count,
         @latest_speech_at,
         @latest_speaker_username,
         @json
@@ -901,6 +1091,7 @@ function buildRecordParams(tableName, record) {
       fetched_at: normalizeText(item.fetchedAt),
       snapshot_path: normalizeText(item.snapshotPath),
       title: normalizeText(item.title),
+      speech_count: Number(item.speechCount || 0),
       latest_speech_at: normalizeText(item.latestSpeechAt),
       latest_speaker_username: normalizeText(item.latestSpeakerUsername),
       json,

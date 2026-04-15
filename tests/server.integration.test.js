@@ -19,6 +19,169 @@ async function createStorageDir() {
   return fs.mkdtemp(path.join(os.tmpdir(), "papershare-test-"));
 }
 
+function seedLegacySqliteWithoutSpeechCount(storageDir) {
+  const db = new Database(path.join(storageDir, "papershare.sqlite"));
+
+  db.exec(`
+    CREATE TABLE papers (
+      id TEXT PRIMARY KEY,
+      source_url TEXT,
+      created_by_user_id TEXT,
+      created_by_username TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      fetched_at TEXT,
+      snapshot_path TEXT,
+      title TEXT,
+      latest_speech_at TEXT,
+      latest_speaker_username TEXT,
+      json TEXT NOT NULL
+    );
+
+    CREATE TABLE annotations (
+      id TEXT PRIMARY KEY,
+      paper_id TEXT NOT NULL,
+      parent_annotation_id TEXT,
+      root_annotation_id TEXT,
+      created_by_user_id TEXT,
+      created_by_username TEXT,
+      created_at TEXT,
+      attachments_json TEXT NOT NULL DEFAULT '[]',
+      json TEXT NOT NULL
+    );
+
+    CREATE TABLE discussions (
+      id TEXT PRIMARY KEY,
+      paper_id TEXT NOT NULL,
+      parent_discussion_id TEXT,
+      root_discussion_id TEXT,
+      created_by_user_id TEXT,
+      created_by_username TEXT,
+      created_at TEXT,
+      attachments_json TEXT NOT NULL DEFAULT '[]',
+      json TEXT NOT NULL
+    );
+  `);
+
+  const paper = {
+    id: "paper-legacy-sqlite",
+    sourceUrl: "https://example.org/legacy-sqlite",
+    title: "Legacy SQLite Paper",
+    created_by_user_id: "bootstrap-admin",
+    created_by_username: "admin",
+    createdAt: "2026-04-15T00:00:00.000Z",
+    updatedAt: "2026-04-15T00:00:00.000Z",
+    fetchedAt: "2026-04-15T00:00:00.000Z",
+    snapshotPath: "html/legacy-sqlite.html",
+  };
+  const annotation = {
+    id: "annotation-legacy-sqlite",
+    paperId: paper.id,
+    note: "Legacy sqlite annotation",
+    exact: "Legacy",
+    prefix: "",
+    suffix: "",
+    target_scope: "body",
+    start_offset: 0,
+    end_offset: 6,
+    created_by_user_id: "bootstrap-admin",
+    created_by_username: "admin",
+    created_at: "2026-04-15T00:01:00.000Z",
+    parent_annotation_id: "",
+    root_annotation_id: "",
+    attachments: [],
+  };
+  const discussion = {
+    id: "discussion-legacy-sqlite",
+    paperId: paper.id,
+    note: "Legacy sqlite discussion",
+    created_by_user_id: "bootstrap-admin",
+    created_by_username: "admin",
+    created_at: "2026-04-15T00:02:00.000Z",
+    parent_discussion_id: "",
+    root_discussion_id: "",
+    attachments: [],
+  };
+
+  db.prepare(`
+    INSERT INTO papers (
+      id,
+      source_url,
+      created_by_user_id,
+      created_by_username,
+      created_at,
+      updated_at,
+      fetched_at,
+      snapshot_path,
+      title,
+      latest_speech_at,
+      latest_speaker_username,
+      json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    paper.id,
+    paper.sourceUrl,
+    paper.created_by_user_id,
+    paper.created_by_username,
+    paper.createdAt,
+    paper.updatedAt,
+    paper.fetchedAt,
+    paper.snapshotPath,
+    paper.title,
+    "",
+    "",
+    JSON.stringify(paper)
+  );
+  db.prepare(`
+    INSERT INTO annotations (
+      id,
+      paper_id,
+      parent_annotation_id,
+      root_annotation_id,
+      created_by_user_id,
+      created_by_username,
+      created_at,
+      attachments_json,
+      json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    annotation.id,
+    annotation.paperId,
+    annotation.parent_annotation_id,
+    annotation.root_annotation_id,
+    annotation.created_by_user_id,
+    annotation.created_by_username,
+    annotation.created_at,
+    "[]",
+    JSON.stringify(annotation)
+  );
+  db.prepare(`
+    INSERT INTO discussions (
+      id,
+      paper_id,
+      parent_discussion_id,
+      root_discussion_id,
+      created_by_user_id,
+      created_by_username,
+      created_at,
+      attachments_json,
+      json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    discussion.id,
+    discussion.paperId,
+    discussion.parent_discussion_id,
+    discussion.root_discussion_id,
+    discussion.created_by_user_id,
+    discussion.created_by_username,
+    discussion.created_at,
+    "[]",
+    JSON.stringify(discussion)
+  );
+
+  db.close();
+}
+
 function clearServerModules() {
   Object.keys(require.cache).forEach((cacheKey) => {
     if (cacheKey.includes(SERVER_MODULE_CACHE_FRAGMENT) || cacheKey.endsWith(`${path.sep}server.js`)) {
@@ -348,6 +511,45 @@ describe("SQLite migration and API flows", () => {
   it("migrates legacy JSON to sqlite, creates backups, and rehashes legacy passwords on login", async () => {
     const storageDir = await createStorageDir();
     const createdAt = "2026-04-15T00:00:00.000Z";
+    const legacyPaper = {
+      id: "paper-legacy-json",
+      sourceUrl: "https://example.org/legacy-json",
+      title: "Legacy JSON Paper",
+      created_by_user_id: "user-legacy",
+      created_by_username: "legacy",
+      createdAt,
+      updatedAt: createdAt,
+      fetchedAt: createdAt,
+      snapshotPath: "html/legacy-json.html",
+    };
+    const legacyAnnotation = {
+      id: "annotation-legacy-json",
+      paperId: legacyPaper.id,
+      note: "Legacy annotation",
+      exact: "Legacy",
+      prefix: "",
+      suffix: "",
+      target_scope: "body",
+      start_offset: 0,
+      end_offset: 6,
+      created_by_user_id: "user-legacy",
+      created_by_username: "legacy",
+      created_at: "2026-04-15T00:01:00.000Z",
+      parent_annotation_id: "",
+      root_annotation_id: "",
+      attachments: [],
+    };
+    const legacyDiscussion = {
+      id: "discussion-legacy-json",
+      paperId: legacyPaper.id,
+      note: "Legacy discussion",
+      created_by_user_id: "user-legacy",
+      created_by_username: "legacy",
+      created_at: "2026-04-15T00:02:00.000Z",
+      parent_discussion_id: "",
+      root_discussion_id: "",
+      attachments: [],
+    };
 
     await Promise.all([
       fs.writeFile(
@@ -368,9 +570,17 @@ describe("SQLite migration and API flows", () => {
         "utf8"
       ),
       fs.writeFile(path.join(storageDir, "sessions.json"), "[]\n", "utf8"),
-      fs.writeFile(path.join(storageDir, "papers.json"), "[]\n", "utf8"),
-      fs.writeFile(path.join(storageDir, "annotations.json"), "[]\n", "utf8"),
-      fs.writeFile(path.join(storageDir, "discussions.json"), "[]\n", "utf8"),
+      fs.writeFile(path.join(storageDir, "papers.json"), JSON.stringify([legacyPaper], null, 2), "utf8"),
+      fs.writeFile(
+        path.join(storageDir, "annotations.json"),
+        JSON.stringify([legacyAnnotation], null, 2),
+        "utf8"
+      ),
+      fs.writeFile(
+        path.join(storageDir, "discussions.json"),
+        JSON.stringify([legacyDiscussion], null, 2),
+        "utf8"
+      ),
     ]);
 
     const core = await loadCoreForStorage(storageDir);
@@ -393,12 +603,77 @@ describe("SQLite migration and API flows", () => {
     const migratedUser = db
       .prepare("SELECT password_hash AS passwordHash FROM users WHERE username = ?")
       .get("legacy");
+    const migratedPaper = db
+      .prepare(`
+        SELECT speech_count AS speechCount, latest_speech_at AS latestSpeechAt,
+               latest_speaker_username AS latestSpeakerUsername, json
+        FROM papers
+        WHERE id = ?
+      `)
+      .get(legacyPaper.id);
+    const migratedPaperJson = JSON.parse(migratedPaper.json);
 
     expect(migratedUser.passwordHash.startsWith("scrypt$")).toBe(true);
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM users WHERE username = ?").get("legacy").count
     ).toBe(1);
+    expect(migratedPaper.speechCount).toBe(2);
+    expect(migratedPaper.latestSpeechAt).toBe("2026-04-15T00:02:00.000Z");
+    expect(migratedPaper.latestSpeakerUsername).toBe("legacy");
+    expect(migratedPaperJson.speechCount).toBe(2);
+    expect(migratedPaperJson.latestSpeechAt).toBe("2026-04-15T00:02:00.000Z");
+    expect(migratedPaperJson.latestSpeakerUsername).toBe("legacy");
     db.close();
+
+    const papersResponse = await agent.get("/api/papers");
+    expect(papersResponse.status).toBe(200);
+    expect(papersResponse.body[0].speechCount).toBe(2);
+    expect(papersResponse.body[0].latestSpeechAt).toBe("2026-04-15T00:02:00.000Z");
+    expect(papersResponse.body[0].latestSpeakerUsername).toBe("legacy");
+  });
+
+  it("backfills paper activity when upgrading an existing sqlite database", async () => {
+    const storageDir = await createStorageDir();
+    seedLegacySqliteWithoutSpeechCount(storageDir);
+
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    const loginResponse = await admin.post("/api/auth/login").send({
+      username: "admin",
+      password: "1234",
+    });
+    expect(loginResponse.status).toBe(200);
+
+    const db = new Database(path.join(storageDir, "papershare.sqlite"), { readonly: true });
+    const columns = db
+      .prepare("PRAGMA table_info(papers)")
+      .all()
+      .map((column) => column.name);
+    const upgradedPaper = db
+      .prepare(`
+        SELECT speech_count AS speechCount, latest_speech_at AS latestSpeechAt,
+               latest_speaker_username AS latestSpeakerUsername, json
+        FROM papers
+        WHERE id = ?
+      `)
+      .get("paper-legacy-sqlite");
+    const upgradedPaperJson = JSON.parse(upgradedPaper.json);
+
+    expect(columns).toContain("speech_count");
+    expect(upgradedPaper.speechCount).toBe(2);
+    expect(upgradedPaper.latestSpeechAt).toBe("2026-04-15T00:02:00.000Z");
+    expect(upgradedPaper.latestSpeakerUsername).toBe("admin");
+    expect(upgradedPaperJson.speechCount).toBe(2);
+    db.close();
+
+    const papersResponse = await admin.get("/api/papers");
+    expect(papersResponse.status).toBe(200);
+    expect(papersResponse.body).toHaveLength(1);
+    expect(papersResponse.body[0].speechCount).toBe(2);
+    expect(papersResponse.body[0].latestSpeechAt).toBe("2026-04-15T00:02:00.000Z");
+    expect(papersResponse.body[0].latestSpeakerUsername).toBe("admin");
   });
 
   it("keeps the main collaboration flow working against sqlite-backed storage", async () => {
@@ -487,6 +762,8 @@ describe("SQLite migration and API flows", () => {
     expect(papersResponse.status).toBe(200);
     expect(papersResponse.body).toHaveLength(1);
     expect(papersResponse.body[0].speechCount).toBe(4);
+    expect(papersResponse.body[0].latestSpeechAt).toBeTruthy();
+    expect(papersResponse.body[0].latestSpeakerUsername).toBe("member1");
 
     const usersResponse = await admin.get("/api/users");
     expect(usersResponse.status).toBe(200);
@@ -503,6 +780,64 @@ describe("SQLite migration and API flows", () => {
     expect(statusResponse.body.paperCount).toBe(1);
     expect(statusResponse.body.annotationCount).toBe(2);
     expect(statusResponse.body.discussionCount).toBe(2);
+  });
+
+  it("recomputes paper activity after username changes and speech deletions", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+    await createMemberUser(admin, "rename-member", "rename-pass");
+
+    const member = request.agent(app);
+    await loginAs(member, "rename-member", "rename-pass");
+
+    const importedPaper = await importHtmlPaper(
+      admin,
+      "https://example.org/papers/rename-activity",
+      createImportHtml("Rename Activity Paper", "Delete and rename checks")
+    );
+    const discussion = await createDiscussion(admin, importedPaper.id, {
+      note: "Admin discussion",
+    });
+    const reply = await createDiscussionReply(member, discussion.id, {
+      note: "Member reply",
+    });
+
+    const beforeRenameResponse = await admin.get("/api/papers");
+    expect(beforeRenameResponse.status).toBe(200);
+    expect(beforeRenameResponse.body[0].speechCount).toBe(2);
+    expect(beforeRenameResponse.body[0].latestSpeakerUsername).toBe("rename-member");
+
+    const renameResponse = await member.post("/api/me/username").send({
+      username: "renamed-member",
+    });
+    expect(renameResponse.status).toBe(200);
+    expect(renameResponse.body.user.username).toBe("renamed-member");
+
+    const afterRenameResponse = await admin.get("/api/papers");
+    expect(afterRenameResponse.status).toBe(200);
+    expect(afterRenameResponse.body[0].speechCount).toBe(2);
+    expect(afterRenameResponse.body[0].latestSpeakerUsername).toBe("renamed-member");
+
+    const deleteReplyResponse = await member.delete(`/api/discussions/${reply.id}`);
+    expect(deleteReplyResponse.status).toBe(200);
+
+    const afterReplyDeleteResponse = await admin.get("/api/papers");
+    expect(afterReplyDeleteResponse.status).toBe(200);
+    expect(afterReplyDeleteResponse.body[0].speechCount).toBe(1);
+    expect(afterReplyDeleteResponse.body[0].latestSpeakerUsername).toBe("admin");
+
+    const deleteDiscussionResponse = await admin.delete(`/api/discussions/${discussion.id}`);
+    expect(deleteDiscussionResponse.status).toBe(200);
+
+    const afterDiscussionDeleteResponse = await admin.get("/api/papers");
+    expect(afterDiscussionDeleteResponse.status).toBe(200);
+    expect(afterDiscussionDeleteResponse.body[0].speechCount).toBe(0);
+    expect(afterDiscussionDeleteResponse.body[0].latestSpeechAt).toBe("");
+    expect(afterDiscussionDeleteResponse.body[0].latestSpeakerUsername).toBe("");
   });
 
   it("enforces CORS allowlists, secure cookie attributes, and static cache headers", async () => {

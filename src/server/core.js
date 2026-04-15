@@ -1796,9 +1796,30 @@ async function createMemberUser(body) {
   return serializeUser(user);
 }
 
+function collectPaperIdsFromRecords(records) {
+  return Array.from(
+    new Set(
+      (Array.isArray(records) ? records : [])
+        .map((record) => String(record?.paperId || record?.id || "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function refreshPaperActivitiesInRepositories(repositories, paperIds) {
+  repositories.papers.refreshActivitiesByIds(paperIds);
+}
+
+function refreshAllPaperActivities() {
+  SQLITE_STORE.runInTransaction((repositories) => {
+    repositories.papers.backfillActivityFields();
+  });
+}
+
 function syncUsernameAcrossRecords(repositories, currentUser, nextUsername) {
   const currentUserId = String(currentUser?.id || "").trim();
   const currentUsername = String(currentUser?.username || "").trim();
+  const affectedPaperIds = new Set();
 
   repositories.papers.listByUser(currentUserId, currentUsername).forEach((paper) => {
     repositories.papers.update(
@@ -1811,6 +1832,10 @@ function syncUsernameAcrossRecords(repositories, currentUser, nextUsername) {
   });
 
   repositories.annotations.listByUser(currentUserId, currentUsername).forEach((annotation) => {
+    if (annotation.paperId) {
+      affectedPaperIds.add(annotation.paperId);
+    }
+
     repositories.annotations.update(
       normalizeAnnotationRecord({
         ...annotation,
@@ -1821,6 +1846,10 @@ function syncUsernameAcrossRecords(repositories, currentUser, nextUsername) {
   });
 
   repositories.discussions.listByUser(currentUserId, currentUsername).forEach((discussion) => {
+    if (discussion.paperId) {
+      affectedPaperIds.add(discussion.paperId);
+    }
+
     repositories.discussions.update(
       normalizeDiscussionRecord({
         ...discussion,
@@ -1829,6 +1858,8 @@ function syncUsernameAcrossRecords(repositories, currentUser, nextUsername) {
       })
     );
   });
+
+  refreshPaperActivitiesInRepositories(repositories, Array.from(affectedPaperIds));
 }
 
 async function deleteUserById(currentUserId, userId, options = {}) {
@@ -1957,6 +1988,7 @@ async function deleteUserOwnedContent(userId) {
     .listByUser(user.id, user.username)
     .map((discussion) => normalizeDiscussionRecord(discussion))
     .filter((discussion) => !deletedPaperIds.has(discussion.paperId));
+  const affectedPaperIds = collectPaperIdsFromRecords([...ownedAnnotations, ...ownedDiscussions]);
   let deletedAnnotations = [...deletedAnnotationsFromPapers];
   let deletedDiscussions = [...deletedDiscussionsFromPapers];
 
@@ -1985,6 +2017,7 @@ async function deleteUserOwnedContent(userId) {
         parentKey: "parent_discussion_id",
       }),
     ]);
+    refreshPaperActivitiesInRepositories(repositories, affectedPaperIds);
   });
 
   await Promise.all([
@@ -2422,7 +2455,10 @@ async function saveAnnotation(paperId, body, currentUser) {
     };
 
     const normalizedAnnotation = normalizeAnnotationRecord(nextAnnotation);
-    SQLITE_STORE.annotations.insert(normalizedAnnotation);
+    SQLITE_STORE.runInTransaction((repositories) => {
+      repositories.annotations.insert(normalizedAnnotation);
+      refreshPaperActivitiesInRepositories(repositories, [paperId]);
+    });
     return normalizedAnnotation;
   } catch (error) {
     await deleteAttachmentFiles(attachments);
@@ -2467,7 +2503,10 @@ async function saveAnnotationReply(annotationId, body, currentUser) {
       attachments,
     });
 
-    SQLITE_STORE.annotations.insert(nextReply);
+    SQLITE_STORE.runInTransaction((repositories) => {
+      repositories.annotations.insert(nextReply);
+      refreshPaperActivitiesInRepositories(repositories, [parentAnnotation.paperId]);
+    });
     return nextReply;
   } catch (error) {
     await deleteAttachmentFiles(attachments);
@@ -2498,7 +2537,10 @@ async function saveDiscussion(paperId, body, currentUser) {
       attachments,
     });
 
-    SQLITE_STORE.discussions.insert(nextDiscussion);
+    SQLITE_STORE.runInTransaction((repositories) => {
+      repositories.discussions.insert(nextDiscussion);
+      refreshPaperActivitiesInRepositories(repositories, [paperId]);
+    });
     return nextDiscussion;
   } catch (error) {
     await deleteAttachmentFiles(attachments);
@@ -2537,7 +2579,10 @@ async function saveDiscussionReply(discussionId, body, currentUser) {
       attachments,
     });
 
-    SQLITE_STORE.discussions.insert(nextReply);
+    SQLITE_STORE.runInTransaction((repositories) => {
+      repositories.discussions.insert(nextReply);
+      refreshPaperActivitiesInRepositories(repositories, [parentDiscussion.paperId]);
+    });
     return nextReply;
   } catch (error) {
     await deleteAttachmentFiles(attachments);
@@ -2684,6 +2729,7 @@ async function deleteAnnotationById(annotationId, currentUser) {
       deletedRecords = dedupeRecordsById([annotation, ...replyRecords]);
       deletedRecords.forEach((record) => deletedIds.add(record.id));
       repositories.annotations.deleteByIds(Array.from(deletedIds));
+      refreshPaperActivitiesInRepositories(repositories, [annotation.paperId]);
       return;
     }
 
@@ -2691,6 +2737,7 @@ async function deleteAnnotationById(annotationId, currentUser) {
       String(annotation.parent_annotation_id || "").trim() || getThreadRootAnnotationId(annotation);
     repositories.annotations.reparentChildren(annotationId, fallbackParentId);
     repositories.annotations.deleteById(annotationId);
+    refreshPaperActivitiesInRepositories(repositories, [annotation.paperId]);
   });
 
   await deleteAttachmentsForRecords(deletedRecords);
@@ -2725,6 +2772,7 @@ async function deleteDiscussionById(discussionId, currentUser) {
       deletedRecords = dedupeRecordsById([discussion, ...replyRecords]);
       deletedRecords.forEach((record) => deletedIds.add(record.id));
       repositories.discussions.deleteByIds(Array.from(deletedIds));
+      refreshPaperActivitiesInRepositories(repositories, [discussion.paperId]);
       return;
     }
 
@@ -2733,6 +2781,7 @@ async function deleteDiscussionById(discussionId, currentUser) {
       getThreadRootDiscussionId(discussion);
     repositories.discussions.reparentChildren(discussionId, fallbackParentId);
     repositories.discussions.deleteById(discussionId);
+    refreshPaperActivitiesInRepositories(repositories, [discussion.paperId]);
   });
 
   await deleteAttachmentsForRecords(deletedRecords);
@@ -2803,6 +2852,8 @@ async function clearAnnotationsByPaperId(paperId, currentUser) {
       repositories.annotations.deleteById(replyId);
       deletedAnnotations.push(normalizedReply);
     });
+
+    refreshPaperActivitiesInRepositories(repositories, [paperId]);
   });
 
   const normalizedDeletedAnnotations = dedupeRecordsById(deletedAnnotations);
@@ -2826,7 +2877,12 @@ async function ensureStorageFiles() {
   await fs.mkdir(STORAGE_DIR, { recursive: true });
   await fs.mkdir(HTML_DIR, { recursive: true });
   await fs.mkdir(ATTACHMENTS_DIR, { recursive: true });
-  await SQLITE_STORE.ensureReady();
+  const storeState = await SQLITE_STORE.ensureReady();
+
+  if (storeState.addedSpeechCountColumn || storeState.migratedLegacyJson) {
+    refreshAllPaperActivities();
+  }
+
   await ensureDefaultUsers();
 }
 

@@ -101,10 +101,36 @@ describe("sqlite-store repositories", () => {
       root_annotation_id: "annotation-1",
       attachments: [],
     });
+    store.discussions.insert({
+      id: "discussion-1",
+      paperId: "paper-1",
+      note: "discussion",
+      created_by_user_id: "user-1",
+      created_by_username: "alice",
+      created_at: "2026-04-15T00:04:00.000Z",
+      parent_discussion_id: "",
+      root_discussion_id: "discussion-1",
+      attachments: [],
+    });
 
     expect(store.users.getByUsername("alice")?.id).toBe("user-1");
     expect(store.papers.getBySourceUrl("https://example.org/paper-1")?.id).toBe("paper-1");
     expect(store.annotations.listByPaperId("paper-1")).toHaveLength(3);
+    expect(store.discussions.listByPaperId("paper-1")).toHaveLength(1);
+
+    const refreshedPaper = store.papers.refreshActivityById("paper-1");
+    const storedActivityPaper = store.papers.listWithActivity()[0];
+    const paperColumns = store
+      .getDatabase()
+      .prepare("PRAGMA table_info(papers)")
+      .all()
+      .map((column) => column.name);
+
+    expect(paperColumns).toContain("speech_count");
+    expect(refreshedPaper?.speechCount).toBe(4);
+    expect(refreshedPaper?.latestSpeakerUsername).toBe("alice");
+    expect(refreshedPaper?.latestSpeechAt).toBe("2026-04-15T00:04:00.000Z");
+    expect(storedActivityPaper?.speechCount).toBe(4);
 
     store.annotations.reparentChildren("annotation-2", "annotation-1");
     expect(store.annotations.getById("annotation-3")?.parent_annotation_id).toBe("annotation-1");
