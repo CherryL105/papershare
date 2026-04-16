@@ -7,103 +7,115 @@ const { createSpeechService } = require("./speech-service");
 const { createSystemService } = require("./system-service");
 const { createUsersService } = require("./users-service");
 
-function createServices(deps) {
+function createServices(rawDeps) {
+  const deps = normalizeServiceDeps(rawDeps);
+  const {
+    collections,
+    helpers,
+    limits,
+    paths,
+    platform,
+    runtime: runtimeDeps,
+    staticAssets,
+  } = deps;
+  const { attachments, cors, http: httpHelpers, ids, normalizers, snapshots, storagePaths } =
+    helpers;
   const runtime = {
-    PORT: deps.PORT,
+    PORT: runtimeDeps.PORT,
   };
   const http = createHttpService({
-    applyCorsHeaders: deps.applyCorsHeaders,
-    readRequestJson: deps.readRequestJson,
-    readSpeechMutationBody: deps.readSpeechMutationBody,
-    sendJson: deps.sendJson,
+    applyCorsHeaders: cors.applyCorsHeaders,
+    readRequestJson: httpHelpers.readRequestJson,
+    readSpeechMutationBody: httpHelpers.readSpeechMutationBody,
+    sendJson: httpHelpers.sendJson,
   });
   const auth = createAuthService({
-    sessionCookieName: deps.SESSION_COOKIE_NAME,
-    store: deps.store,
+    sessionCookieName: runtimeDeps.SESSION_COOKIE_NAME,
+    store: platform.store,
   });
   const dashboard = createDashboardService({
-    HttpError: deps.HttpError,
-    normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
-    normalizeDiscussionRecord: deps.normalizeDiscussionRecord,
-    normalizePaperRecord: deps.normalizePaperRecord,
+    HttpError: platform.HttpError,
+    normalizeAnnotationRecord: normalizers.normalizeAnnotationRecord,
+    normalizeDiscussionRecord: normalizers.normalizeDiscussionRecord,
+    normalizePaperRecord: normalizers.normalizePaperRecord,
     serializeUser: auth.serializeUser,
-    store: deps.store,
+    store: platform.store,
   });
   const speech = createSpeechService({
-    attachmentsDir: deps.ATTACHMENTS_DIR,
-    createAnnotationId: deps.createAnnotationId,
-    createAttachmentId: deps.createAttachmentId,
-    createDiscussionId: deps.createDiscussionId,
+    attachmentsDir: paths.ATTACHMENTS_DIR,
+    createAnnotationId: ids.createAnnotationId,
+    createAttachmentId: ids.createAttachmentId,
+    createDiscussionId: ids.createDiscussionId,
     dashboardService: dashboard,
-    formatLimitInMb: deps.formatLimitInMb,
-    fs: deps.fs,
-    HttpError: deps.HttpError,
-    maxAttachmentBytes: deps.MAX_ATTACHMENT_BYTES,
-    maxAttachmentCount: deps.MAX_ATTACHMENT_COUNT,
-    maxTotalAttachmentBytes: deps.MAX_TOTAL_ATTACHMENT_BYTES,
-    normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
-    normalizeAttachmentRecord: deps.normalizeAttachmentRecord,
-    normalizeAttachmentRecords: deps.normalizeAttachmentRecords,
-    normalizeDiscussionRecord: deps.normalizeDiscussionRecord,
-    path: deps.path,
-    readSpeechMutationBody: deps.readSpeechMutationBody,
-    resolveAttachmentDescriptor: deps.resolveAttachmentDescriptor,
-    resolveStorageAbsolutePath: deps.resolveStorageAbsolutePath,
-    sanitizeAttachmentName: deps.sanitizeAttachmentName,
-    store: deps.store,
+    formatLimitInMb: attachments.formatLimitInMb,
+    fs: platform.fs,
+    HttpError: platform.HttpError,
+    maxAttachmentBytes: limits.MAX_ATTACHMENT_BYTES,
+    maxAttachmentCount: limits.MAX_ATTACHMENT_COUNT,
+    maxTotalAttachmentBytes: limits.MAX_TOTAL_ATTACHMENT_BYTES,
+    normalizeAnnotationRecord: normalizers.normalizeAnnotationRecord,
+    normalizeAttachmentRecord: normalizers.normalizeAttachmentRecord,
+    normalizeAttachmentRecords: normalizers.normalizeAttachmentRecords,
+    normalizeDiscussionRecord: normalizers.normalizeDiscussionRecord,
+    path: platform.path,
+    readSpeechMutationBody: httpHelpers.readSpeechMutationBody,
+    resolveAttachmentDescriptor: attachments.resolveAttachmentDescriptor,
+    resolveStorageAbsolutePath: storagePaths.resolveStorageAbsolutePath,
+    sanitizeAttachmentName: attachments.sanitizeAttachmentName,
+    store: platform.store,
   });
   const papers = createPapersService({
-    createPaperId: deps.createPaperId,
+    createPaperId: ids.createPaperId,
     dashboardService: dashboard,
     deleteSpeechAttachmentsForRecords: speech.deleteAttachmentsForRecords,
-    enforceSnapshotArticleImagePolicy: deps.enforceSnapshotArticleImagePolicy,
-    fs: deps.fs,
-    HttpError: deps.HttpError,
-    normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
-    normalizeDiscussionRecord: deps.normalizeDiscussionRecord,
-    normalizePaperRecord: deps.normalizePaperRecord,
-    path: deps.path,
-    storageDir: deps.STORAGE_DIR,
-    store: deps.store,
+    enforceSnapshotArticleImagePolicy: snapshots.enforceSnapshotArticleImagePolicy,
+    fs: platform.fs,
+    HttpError: platform.HttpError,
+    normalizeAnnotationRecord: normalizers.normalizeAnnotationRecord,
+    normalizeDiscussionRecord: normalizers.normalizeDiscussionRecord,
+    normalizePaperRecord: normalizers.normalizePaperRecord,
+    path: platform.path,
+    storageDir: paths.STORAGE_DIR,
+    store: platform.store,
   });
   const assets = createAssetsService({
-    HttpError: deps.HttpError,
-    attachmentsDir: deps.ATTACHMENTS_DIR,
-    clientDistDir: deps.CLIENT_DIST_DIR,
+    HttpError: platform.HttpError,
+    attachmentsDir: paths.ATTACHMENTS_DIR,
+    clientDistDir: paths.CLIENT_DIST_DIR,
     fetchElsevierObject: papers.fetchElsevierObject,
-    fs: deps.fs,
-    mimeTypeByExtension: deps.MIME_TYPE_BY_EXTENSION,
-    normalizeStorageRecordPath: deps.normalizeStorageRecordPath,
-    path: deps.path,
-    resolveStorageAbsolutePath: deps.resolveStorageAbsolutePath,
-    sendJson: deps.sendJson,
-    staticAssetCacheControl: deps.STATIC_ASSET_CACHE_CONTROL,
-    staticHashedAssetCacheControl: deps.STATIC_HASHED_ASSET_CACHE_CONTROL,
-    staticHtmlCacheControl: deps.STATIC_HTML_CACHE_CONTROL,
+    fs: platform.fs,
+    mimeTypeByExtension: staticAssets.MIME_TYPE_BY_EXTENSION,
+    normalizeStorageRecordPath: storagePaths.normalizeStorageRecordPath,
+    path: platform.path,
+    resolveStorageAbsolutePath: storagePaths.resolveStorageAbsolutePath,
+    sendJson: httpHelpers.sendJson,
+    staticAssetCacheControl: staticAssets.STATIC_ASSET_CACHE_CONTROL,
+    staticHashedAssetCacheControl: staticAssets.STATIC_HASHED_ASSET_CACHE_CONTROL,
+    staticHtmlCacheControl: staticAssets.STATIC_HTML_CACHE_CONTROL,
   });
   const users = createUsersService({
-    HttpError: deps.HttpError,
+    HttpError: platform.HttpError,
     authService: auth,
     dashboardService: dashboard,
     deleteSnapshotByPath: papers.deleteSnapshotByPath,
     deleteSpeechAttachmentsForRecords: speech.deleteAttachmentsForRecords,
-    normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
-    normalizeDiscussionRecord: deps.normalizeDiscussionRecord,
-    normalizePaperRecord: deps.normalizePaperRecord,
-    store: deps.store,
+    normalizeAnnotationRecord: normalizers.normalizeAnnotationRecord,
+    normalizeDiscussionRecord: normalizers.normalizeDiscussionRecord,
+    normalizePaperRecord: normalizers.normalizePaperRecord,
+    store: platform.store,
   });
   const system = createSystemService({
     assetsService: assets,
-    attachmentsDir: deps.ATTACHMENTS_DIR,
+    attachmentsDir: paths.ATTACHMENTS_DIR,
     collectionFiles: {
-      annotations: deps.ANNOTATIONS_FILE,
-      discussions: deps.DISCUSSIONS_FILE,
-      papers: deps.PAPERS_FILE,
+      annotations: collections.ANNOTATIONS_FILE,
+      discussions: collections.DISCUSSIONS_FILE,
+      papers: collections.PAPERS_FILE,
     },
-    fs: deps.fs,
-    htmlDir: deps.HTML_DIR,
-    storageDir: deps.STORAGE_DIR,
-    store: deps.store,
+    fs: platform.fs,
+    htmlDir: paths.HTML_DIR,
+    storageDir: paths.STORAGE_DIR,
+    store: platform.store,
     usersService: users,
   });
 
@@ -117,6 +129,82 @@ function createServices(deps) {
     speech,
     system,
     users,
+  };
+}
+
+function normalizeServiceDeps(deps) {
+  if (deps?.helpers) {
+    return deps;
+  }
+
+  return {
+    collections: {
+      ANNOTATIONS_FILE: deps.ANNOTATIONS_FILE,
+      DISCUSSIONS_FILE: deps.DISCUSSIONS_FILE,
+      PAPERS_FILE: deps.PAPERS_FILE,
+    },
+    helpers: {
+      attachments: {
+        formatLimitInMb: deps.formatLimitInMb,
+        resolveAttachmentDescriptor: deps.resolveAttachmentDescriptor,
+        sanitizeAttachmentName: deps.sanitizeAttachmentName,
+      },
+      cors: {
+        applyCorsHeaders: deps.applyCorsHeaders,
+      },
+      http: {
+        readRequestJson: deps.readRequestJson,
+        readSpeechMutationBody: deps.readSpeechMutationBody,
+        sendJson: deps.sendJson,
+      },
+      ids: {
+        createAnnotationId: deps.createAnnotationId,
+        createAttachmentId: deps.createAttachmentId,
+        createDiscussionId: deps.createDiscussionId,
+        createPaperId: deps.createPaperId,
+      },
+      normalizers: {
+        normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
+        normalizeAttachmentRecord: deps.normalizeAttachmentRecord,
+        normalizeAttachmentRecords: deps.normalizeAttachmentRecords,
+        normalizeDiscussionRecord: deps.normalizeDiscussionRecord,
+        normalizePaperRecord: deps.normalizePaperRecord,
+      },
+      snapshots: {
+        enforceSnapshotArticleImagePolicy: deps.enforceSnapshotArticleImagePolicy,
+      },
+      storagePaths: {
+        normalizeStorageRecordPath: deps.normalizeStorageRecordPath,
+        resolveStorageAbsolutePath: deps.resolveStorageAbsolutePath,
+      },
+    },
+    limits: {
+      MAX_ATTACHMENT_BYTES: deps.MAX_ATTACHMENT_BYTES,
+      MAX_ATTACHMENT_COUNT: deps.MAX_ATTACHMENT_COUNT,
+      MAX_TOTAL_ATTACHMENT_BYTES: deps.MAX_TOTAL_ATTACHMENT_BYTES,
+    },
+    paths: {
+      ATTACHMENTS_DIR: deps.ATTACHMENTS_DIR,
+      CLIENT_DIST_DIR: deps.CLIENT_DIST_DIR,
+      HTML_DIR: deps.HTML_DIR,
+      STORAGE_DIR: deps.STORAGE_DIR,
+    },
+    platform: {
+      fs: deps.fs,
+      HttpError: deps.HttpError,
+      path: deps.path,
+      store: deps.store,
+    },
+    runtime: {
+      PORT: deps.PORT,
+      SESSION_COOKIE_NAME: deps.SESSION_COOKIE_NAME,
+    },
+    staticAssets: {
+      MIME_TYPE_BY_EXTENSION: deps.MIME_TYPE_BY_EXTENSION,
+      STATIC_ASSET_CACHE_CONTROL: deps.STATIC_ASSET_CACHE_CONTROL,
+      STATIC_HASHED_ASSET_CACHE_CONTROL: deps.STATIC_HASHED_ASSET_CACHE_CONTROL,
+      STATIC_HTML_CACHE_CONTROL: deps.STATIC_HTML_CACHE_CONTROL,
+    },
   };
 }
 

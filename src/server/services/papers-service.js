@@ -6,6 +6,15 @@ const {
   parsePreloadedStateFromHtml,
   supportsArticleImagesForSourceUrl,
 } = require("../../../shared/papershare-shared");
+const {
+  cleanTextValue,
+  decodeHtmlEntities,
+  escapeRegExp,
+  firstNonEmpty,
+  normalizeKeywords,
+  splitPeople,
+  stripTags,
+} = require("../utils/text-utils");
 
 const ELSEVIER_API_BASE_URL = "https://api.elsevier.com/content/article";
 const ELSEVIER_OBJECT_API_BASE_URL = "https://api.elsevier.com/content/object/eid";
@@ -1667,47 +1676,6 @@ function parseTagAttributes(tagMarkup) {
   return attributes;
 }
 
-function normalizeKeywords(value) {
-  return [...new Set(String(value || "").split(/[\n,，;；|]/).map(cleanTextValue))].filter(
-    Boolean
-  );
-}
-
-function splitPeople(value) {
-  return String(value || "")
-    .split(/[\n,，;；|]/)
-    .map(cleanTextValue)
-    .filter(Boolean);
-}
-
-function cleanTextValue(value) {
-  return decodeHtmlEntities(String(value || "").replace(/\s+/g, " ").trim());
-}
-
-function stripTags(value) {
-  return String(value || "").replace(/<[^>]*>/g, " ");
-}
-
-function decodeHtmlEntities(value) {
-  return String(value || "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
-}
-
-function firstNonEmpty(values) {
-  return values.find((value) => String(value || "").trim()) || "";
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function isTlsCertificateError(error) {
   const message = String(error?.message || "").toLowerCase();
   const code = String(error?.cause?.code || error?.code || "").toLowerCase();
@@ -1728,6 +1696,7 @@ function isTlsCertificateError(error) {
 module.exports = {
   convertElsevierXmlToHtml,
   createPapersService,
+  extractMetadataFromHtml,
   fetchElsevierArticleSnapshotHtml,
   resolveElsevierApiKey,
 };
