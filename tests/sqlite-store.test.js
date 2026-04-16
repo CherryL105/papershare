@@ -155,4 +155,184 @@ describe("sqlite-store repositories", () => {
 
     await store.close();
   });
+
+  it("backfills missing ownership and chunks listByIds queries", async () => {
+    const storageDir = await createStorageDir();
+    const store = createSqliteStore({
+      storageDir,
+      jsonFilePaths: {
+        [TABLES.PAPERS]: path.join(storageDir, "papers.json"),
+        [TABLES.ANNOTATIONS]: path.join(storageDir, "annotations.json"),
+        [TABLES.DISCUSSIONS]: path.join(storageDir, "discussions.json"),
+        [TABLES.USERS]: path.join(storageDir, "users.json"),
+        [TABLES.SESSIONS]: path.join(storageDir, "sessions.json"),
+      },
+    });
+
+    await store.ensureReady();
+
+    store.users.insert({
+      id: "user-1",
+      username: "Alice",
+      role: "member",
+      passwordHash: "hash-1",
+      createdAt: "2026-04-15T00:00:00.000Z",
+      updatedAt: "2026-04-15T00:00:00.000Z",
+    });
+
+    store.papers.insert({
+      id: "paper-owned",
+      sourceUrl: "https://example.org/paper-owned",
+      title: "Owned Paper",
+      created_by_user_id: "",
+      created_by_username: "Alice",
+      createdAt: "2026-04-15T00:00:00.000Z",
+      updatedAt: "2026-04-15T00:00:00.000Z",
+      fetchedAt: "2026-04-15T00:00:00.000Z",
+      snapshotPath: "html/paper-owned.html",
+    });
+    store.papers.insert({
+      id: "paper-orphan",
+      sourceUrl: "https://example.org/paper-orphan",
+      title: "Orphan Paper",
+      created_by_user_id: "",
+      created_by_username: "ghost",
+      createdAt: "2026-04-15T00:00:00.000Z",
+      updatedAt: "2026-04-15T00:00:00.000Z",
+      fetchedAt: "2026-04-15T00:00:00.000Z",
+      snapshotPath: "html/paper-orphan.html",
+    });
+    store.annotations.insert({
+      id: "annotation-owned",
+      paperId: "paper-owned",
+      note: "owned annotation",
+      exact: "owned",
+      prefix: "",
+      suffix: "",
+      target_scope: "body",
+      start_offset: 0,
+      end_offset: 5,
+      created_by_user_id: "",
+      created_by_username: "Alice",
+      created_at: "2026-04-15T00:01:00.000Z",
+      parent_annotation_id: "",
+      root_annotation_id: "annotation-owned",
+      attachments: [],
+    });
+    store.annotations.insert({
+      id: "annotation-orphan",
+      paperId: "paper-owned",
+      note: "orphan annotation",
+      exact: "orphan",
+      prefix: "",
+      suffix: "",
+      target_scope: "body",
+      start_offset: 0,
+      end_offset: 6,
+      created_by_user_id: "",
+      created_by_username: "ghost",
+      created_at: "2026-04-15T00:02:00.000Z",
+      parent_annotation_id: "",
+      root_annotation_id: "annotation-orphan",
+      attachments: [],
+    });
+    store.discussions.insert({
+      id: "discussion-owned",
+      paperId: "paper-owned",
+      note: "owned discussion",
+      created_by_user_id: "",
+      created_by_username: "Alice",
+      created_at: "2026-04-15T00:03:00.000Z",
+      parent_discussion_id: "",
+      root_discussion_id: "discussion-owned",
+      attachments: [],
+    });
+    store.discussions.insert({
+      id: "discussion-orphan",
+      paperId: "paper-owned",
+      note: "orphan discussion",
+      created_by_user_id: "",
+      created_by_username: "ghost",
+      created_at: "2026-04-15T00:04:00.000Z",
+      parent_discussion_id: "",
+      root_discussion_id: "discussion-orphan",
+      attachments: [],
+    });
+
+    const backfillResult = store.backfillOwnership();
+
+    expect(backfillResult).toMatchObject({
+      annotations: { updatedCount: 1, unmatchedCount: 1 },
+      discussions: { updatedCount: 1, unmatchedCount: 1 },
+      papers: { updatedCount: 1, unmatchedCount: 1 },
+    });
+    expect(store.papers.getById("paper-owned")?.created_by_user_id).toBe("user-1");
+    expect(store.annotations.getById("annotation-owned")?.created_by_user_id).toBe("user-1");
+    expect(store.discussions.getById("discussion-owned")?.created_by_user_id).toBe("user-1");
+    expect(
+      JSON.parse(
+        store.getDatabase().prepare("SELECT json FROM papers WHERE id = ?").get("paper-owned").json
+      ).created_by_user_id
+    ).toBe("user-1");
+
+    const secondPass = store.backfillOwnership();
+
+    expect(secondPass).toMatchObject({
+      annotations: { updatedCount: 0, unmatchedCount: 1 },
+      discussions: { updatedCount: 0, unmatchedCount: 1 },
+      papers: { updatedCount: 0, unmatchedCount: 1 },
+    });
+
+    const chunkedPaperIds = [];
+    const chunkedAnnotationIds = [];
+
+    store.runInTransaction((repositories) => {
+      for (let index = 0; index < 905; index += 1) {
+        const paperId = `paper-chunk-${index}`;
+        const annotationId = `annotation-chunk-${index}`;
+
+        repositories.papers.insert({
+          id: paperId,
+          sourceUrl: `https://example.org/${paperId}`,
+          title: `Chunked Paper ${index}`,
+          created_by_user_id: "user-1",
+          created_by_username: "Alice",
+          createdAt: "2026-04-15T00:00:00.000Z",
+          updatedAt: "2026-04-15T00:00:00.000Z",
+          fetchedAt: "2026-04-15T00:00:00.000Z",
+          snapshotPath: `html/${paperId}.html`,
+        });
+        repositories.annotations.insert({
+          id: annotationId,
+          paperId: "paper-owned",
+          note: `Chunked annotation ${index}`,
+          exact: "chunked",
+          prefix: "",
+          suffix: "",
+          target_scope: "body",
+          start_offset: 0,
+          end_offset: 7,
+          created_by_user_id: "user-1",
+          created_by_username: "Alice",
+          created_at: "2026-04-15T00:05:00.000Z",
+          parent_annotation_id: "",
+          root_annotation_id: annotationId,
+          attachments: [],
+        });
+
+        chunkedPaperIds.push(paperId);
+        chunkedAnnotationIds.push(annotationId);
+      }
+    });
+
+    const chunkedPapers = store.papers.listByIds(chunkedPaperIds);
+    const chunkedAnnotations = store.annotations.listByIds(chunkedAnnotationIds);
+
+    expect(chunkedPapers).toHaveLength(905);
+    expect(chunkedAnnotations).toHaveLength(905);
+    expect(chunkedPapers.some((paper) => paper.id === "paper-chunk-904")).toBe(true);
+    expect(chunkedAnnotations.some((annotation) => annotation.id === "annotation-chunk-904")).toBe(true);
+
+    await store.close();
+  });
 });

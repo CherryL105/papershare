@@ -5,6 +5,7 @@ const Database = require("better-sqlite3");
 
 const DB_FILENAME = "papershare.sqlite";
 const BACKUP_DIRNAME = "migration-backups";
+const QUERY_CHUNK_SIZE = 900;
 
 const TABLES = Object.freeze({
   PAPERS: "papers",
@@ -95,6 +96,27 @@ function createSqliteStore(options) {
     return transaction();
   }
 
+  function backfillOwnership() {
+    const database = openDatabase();
+    const transaction = database.transaction(() => {
+      const repositories = getRepositories(database);
+      const usersByUsernameKey = new Map(
+        repositories.users
+          .listAll()
+          .map((user) => [normalizeUsernameKey(user?.username), normalizeText(user?.id)])
+          .filter((entry) => entry[0] && entry[1])
+      );
+
+      return {
+        annotations: repositories.annotations.backfillCreatedByUserId(usersByUsernameKey),
+        discussions: repositories.discussions.backfillCreatedByUserId(usersByUsernameKey),
+        papers: repositories.papers.backfillCreatedByUserId(usersByUsernameKey),
+      };
+    });
+
+    return transaction();
+  }
+
   async function migrateLegacyJsonIfNeeded(database) {
     if (!isDatabaseEmpty(database)) {
       return {
@@ -145,6 +167,7 @@ function createSqliteStore(options) {
   }
 
   return {
+    backfillOwnership,
     close,
     ensureReady,
     getCollectionLength,
@@ -352,6 +375,12 @@ function createPaperRepository(db) {
     WHERE created_by_user_id = ?
     ORDER BY rowid ASC
   `);
+  const selectOwnershipGapStatement = db.prepare(`
+    SELECT ${paperSelectColumns}
+    FROM papers
+    WHERE created_by_user_id = '' AND created_by_username <> ''
+    ORDER BY rowid ASC
+  `);
   const insertStatement = db.prepare(createInsertStatement(TABLES.PAPERS));
   const updateStatement = db.prepare(`
     UPDATE papers
@@ -400,29 +429,29 @@ function createPaperRepository(db) {
       COALESCE((
         SELECT speech.created_at
         FROM (
-          SELECT created_at, rowid
+          SELECT created_at, rowid, 0 AS source_rank
           FROM annotations
           WHERE paper_id = ?
           UNION ALL
-          SELECT created_at, rowid
+          SELECT created_at, rowid, 1 AS source_rank
           FROM discussions
           WHERE paper_id = ?
         ) AS speech
-        ORDER BY speech.created_at DESC, speech.rowid DESC
+        ORDER BY speech.created_at DESC, speech.rowid DESC, speech.source_rank DESC
         LIMIT 1
       ), '') AS latest_speech_at,
       COALESCE((
         SELECT speech.created_by_username
         FROM (
-          SELECT created_at, created_by_username, rowid
+          SELECT created_at, created_by_username, rowid, 0 AS source_rank
           FROM annotations
           WHERE paper_id = ?
           UNION ALL
-          SELECT created_at, created_by_username, rowid
+          SELECT created_at, created_by_username, rowid, 1 AS source_rank
           FROM discussions
           WHERE paper_id = ?
         ) AS speech
-        ORDER BY speech.created_at DESC, speech.rowid DESC
+        ORDER BY speech.created_at DESC, speech.rowid DESC, speech.source_rank DESC
         LIMIT 1
       ), '') AS latest_speaker_username
   `);
@@ -441,29 +470,29 @@ function createPaperRepository(db) {
       COALESCE((
         SELECT speech.created_at
         FROM (
-          SELECT created_at, rowid
+          SELECT created_at, rowid, 0 AS source_rank
           FROM annotations
           WHERE paper_id = papers.id
           UNION ALL
-          SELECT created_at, rowid
+          SELECT created_at, rowid, 1 AS source_rank
           FROM discussions
           WHERE paper_id = papers.id
         ) AS speech
-        ORDER BY speech.created_at DESC, speech.rowid DESC
+        ORDER BY speech.created_at DESC, speech.rowid DESC, speech.source_rank DESC
         LIMIT 1
       ), '') AS latest_speech_at,
       COALESCE((
         SELECT speech.created_by_username
         FROM (
-          SELECT created_at, created_by_username, rowid
+          SELECT created_at, created_by_username, rowid, 0 AS source_rank
           FROM annotations
           WHERE paper_id = papers.id
           UNION ALL
-          SELECT created_at, created_by_username, rowid
+          SELECT created_at, created_by_username, rowid, 1 AS source_rank
           FROM discussions
           WHERE paper_id = papers.id
         ) AS speech
-        ORDER BY speech.created_at DESC, speech.rowid DESC
+        ORDER BY speech.created_at DESC, speech.rowid DESC, speech.source_rank DESC
         LIMIT 1
       ), '') AS latest_speaker_username
     FROM papers
@@ -471,15 +500,15 @@ function createPaperRepository(db) {
       NULLIF((
         SELECT speech.created_at
         FROM (
-          SELECT created_at, rowid
+          SELECT created_at, rowid, 0 AS source_rank
           FROM annotations
           WHERE paper_id = papers.id
           UNION ALL
-          SELECT created_at, rowid
+          SELECT created_at, rowid, 1 AS source_rank
           FROM discussions
           WHERE paper_id = papers.id
         ) AS speech
-        ORDER BY speech.created_at DESC, speech.rowid DESC
+        ORDER BY speech.created_at DESC, speech.rowid DESC, speech.source_rank DESC
         LIMIT 1
       ), ''),
       NULLIF(papers.updated_at, ''),
@@ -562,12 +591,11 @@ function createPaperRepository(db) {
       return [];
     }
 
-    const placeholders = normalizedIds.map(() => "?").join(", ");
-    const rows = db
-      .prepare(
-        `SELECT ${paperSelectColumns} FROM papers WHERE id IN (${placeholders})`
-      )
-      .all(...normalizedIds);
+    const rows = queryRowsByIdsInChunks(
+      db,
+      (placeholders) => `SELECT ${paperSelectColumns} FROM papers WHERE id IN (${placeholders})`,
+      normalizedIds
+    );
     return rows.map((row) => hydratePaperRow(row));
   }
 
@@ -609,6 +637,33 @@ function createPaperRepository(db) {
     },
     listWithActivity() {
       return selectListWithActivityStatement.all().map((row) => hydratePaperRow(row));
+    },
+    backfillCreatedByUserId(usersByUsernameKey) {
+      let updatedCount = 0;
+      let unmatchedCount = 0;
+      const unmatchedUsernames = new Set();
+
+      selectOwnershipGapStatement.all().map((row) => hydratePaperRow(row)).forEach((paper) => {
+        const matchedUserId = usersByUsernameKey.get(normalizeUsernameKey(paper?.created_by_username));
+
+        if (!matchedUserId) {
+          unmatchedCount += 1;
+          unmatchedUsernames.add(normalizeText(paper?.created_by_username));
+          return;
+        }
+
+        updateStoredPaper({
+          ...paper,
+          created_by_user_id: matchedUserId,
+        });
+        updatedCount += 1;
+      });
+
+      return {
+        unmatchedCount,
+        unmatchedUsernames: Array.from(unmatchedUsernames),
+        updatedCount,
+      };
     },
     backfillActivityFields() {
       const papers = listComputedActivityStatement.all().map((row) => hydratePaperRow(row));
@@ -691,6 +746,12 @@ function createSpeechRepository(db, options) {
     WHERE created_by_user_id = ?
     ORDER BY rowid ASC
   `);
+  const selectOwnershipGapStatement = db.prepare(`
+    SELECT json
+    FROM ${tableName}
+    WHERE created_by_user_id = '' AND created_by_username <> ''
+    ORDER BY rowid ASC
+  `);
   const insertStatement = db.prepare(createInsertStatement(tableName));
   const updateStatement = db.prepare(createSpeechUpdateStatement(tableName));
   const deleteByIdStatement = db.prepare(`
@@ -743,6 +804,35 @@ function createSpeechRepository(db, options) {
     },
     listChildrenByParentId(parentId) {
       return parseJsonRows(selectChildrenByParentIdStatement.all(normalizeText(parentId)));
+    },
+    backfillCreatedByUserId(usersByUsernameKey) {
+      let updatedCount = 0;
+      let unmatchedCount = 0;
+      const unmatchedUsernames = new Set();
+
+      parseJsonRows(selectOwnershipGapStatement.all()).forEach((record) => {
+        const matchedUserId = usersByUsernameKey.get(normalizeUsernameKey(record?.created_by_username));
+
+        if (!matchedUserId) {
+          unmatchedCount += 1;
+          unmatchedUsernames.add(normalizeText(record?.created_by_username));
+          return;
+        }
+
+        updateStatement.run(
+          buildRecordParams(tableName, {
+            ...record,
+            created_by_user_id: matchedUserId,
+          })
+        );
+        updatedCount += 1;
+      });
+
+      return {
+        unmatchedCount,
+        unmatchedUsernames: Array.from(unmatchedUsernames),
+        updatedCount,
+      };
     },
     reparentChildren(oldParentId, newParentId) {
       const children = parseJsonRows(
@@ -1142,10 +1232,11 @@ function listByIds(db, tableName, ids) {
     return [];
   }
 
-  const placeholders = normalizedIds.map(() => "?").join(", ");
-  const rows = db
-    .prepare(`SELECT json FROM ${tableName} WHERE id IN (${placeholders})`)
-    .all(...normalizedIds);
+  const rows = queryRowsByIdsInChunks(
+    db,
+    (placeholders) => `SELECT json FROM ${tableName} WHERE id IN (${placeholders})`,
+    normalizedIds
+  );
   return parseJsonRows(rows);
 }
 
@@ -1167,6 +1258,31 @@ function deleteByIds(db, tableName, columnName, ids) {
 
 function normalizeText(value) {
   return value === null || value === undefined ? "" : String(value).trim();
+}
+
+function normalizeUsernameKey(value) {
+  return normalizeText(value).toLowerCase();
+}
+
+function chunkValues(values, chunkSize = QUERY_CHUNK_SIZE) {
+  const chunks = [];
+
+  for (let index = 0; index < values.length; index += chunkSize) {
+    chunks.push(values.slice(index, index + chunkSize));
+  }
+
+  return chunks;
+}
+
+function queryRowsByIdsInChunks(db, buildQuery, ids) {
+  const rows = [];
+
+  chunkValues(ids).forEach((idChunk) => {
+    const placeholders = idChunk.map(() => "?").join(", ");
+    rows.push(...db.prepare(buildQuery(placeholders)).all(...idChunk));
+  });
+
+  return rows;
 }
 
 function createMigrationStamp() {

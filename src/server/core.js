@@ -2123,316 +2123,6 @@ async function getDiscussionsByPaperId(paperId) {
     .map((discussion) => normalizeDiscussionRecord(discussion));
 }
 
-async function getAnnotationsByUserId(currentUser) {
-  const dashboard = await getUserDashboard(currentUser);
-  return dashboard.myAnnotations;
-}
-
-async function listUsersWithStats() {
-  const db = SQLITE_STORE.getDatabase();
-  const users = SQLITE_STORE.users.listAll();
-  const uploadedPaperCountsByUserId = createCountMapFromRows(
-    db
-      .prepare(
-        `
-          SELECT created_by_user_id AS lookup_key, COUNT(*) AS count
-          FROM papers
-          WHERE created_by_user_id <> ''
-          GROUP BY created_by_user_id
-        `
-      )
-      .all()
-  );
-  const uploadedPaperCountsByUsername = createCountMapFromRows(
-    db
-      .prepare(
-        `
-          SELECT created_by_username AS lookup_key, COUNT(*) AS count
-          FROM papers
-          WHERE created_by_user_id = '' AND created_by_username <> ''
-          GROUP BY created_by_username
-        `
-      )
-      .all()
-  );
-  const speechCountsByUserId = createCountMapFromRows(
-    db
-      .prepare(
-        `
-          SELECT lookup_key, SUM(count) AS count
-          FROM (
-            SELECT created_by_user_id AS lookup_key, COUNT(*) AS count
-            FROM annotations
-            WHERE created_by_user_id <> ''
-            GROUP BY created_by_user_id
-            UNION ALL
-            SELECT created_by_user_id AS lookup_key, COUNT(*) AS count
-            FROM discussions
-            WHERE created_by_user_id <> ''
-            GROUP BY created_by_user_id
-          )
-          GROUP BY lookup_key
-        `
-      )
-      .all()
-  );
-  const speechCountsByUsername = createCountMapFromRows(
-    db
-      .prepare(
-        `
-          SELECT lookup_key, SUM(count) AS count
-          FROM (
-            SELECT created_by_username AS lookup_key, COUNT(*) AS count
-            FROM annotations
-            WHERE created_by_user_id = '' AND created_by_username <> ''
-            GROUP BY created_by_username
-            UNION ALL
-            SELECT created_by_username AS lookup_key, COUNT(*) AS count
-            FROM discussions
-            WHERE created_by_user_id = '' AND created_by_username <> ''
-            GROUP BY created_by_username
-          )
-          GROUP BY lookup_key
-        `
-      )
-      .all()
-  );
-
-  return users
-    .map((user) => ({
-      ...serializeUser(user),
-      uploadedPaperCount: getOwnedRecordCountForUser(
-        user,
-        uploadedPaperCountsByUserId,
-        uploadedPaperCountsByUsername
-      ),
-      annotationCount: getOwnedRecordCountForUser(
-        user,
-        speechCountsByUserId,
-        speechCountsByUsername
-      ),
-    }))
-    .sort(compareUsersForDisplay);
-}
-
-async function getUserDashboard(currentUser) {
-  const db = SQLITE_STORE.getDatabase();
-  const ownershipParams = [String(currentUser?.id || ""), String(currentUser?.username || "")];
-  const uploadedPapers = queryJsonRows(
-    db,
-    `
-      SELECT json
-      FROM papers
-      WHERE created_by_user_id = ?
-        OR (created_by_user_id = '' AND created_by_username = ?)
-    `,
-    ownershipParams
-  ).map((paper) => ({
-    ...paper,
-    activity_at: paper.updatedAt || paper.createdAt || paper.fetchedAt || "",
-  }));
-  const ownedAnnotationRecords = queryJsonRows(
-    db,
-    `
-      SELECT json
-      FROM annotations
-      WHERE created_by_user_id = ?
-        OR (created_by_user_id = '' AND created_by_username = ?)
-    `,
-    ownershipParams
-  );
-  const ownedDiscussionRecords = queryJsonRows(
-    db,
-    `
-      SELECT json
-      FROM discussions
-      WHERE created_by_user_id = ?
-        OR (created_by_user_id = '' AND created_by_username = ?)
-    `,
-    ownershipParams
-  );
-  const replyAnnotationRecords = queryJsonRows(
-    db,
-    `
-      SELECT child.json
-      FROM annotations child
-      JOIN annotations parent ON parent.id = child.parent_annotation_id
-      WHERE child.parent_annotation_id <> ''
-        AND NOT (
-          child.created_by_user_id = ?
-          OR (child.created_by_user_id = '' AND child.created_by_username = ?)
-        )
-        AND (
-          parent.created_by_user_id = ?
-          OR (parent.created_by_user_id = '' AND parent.created_by_username = ?)
-        )
-    `,
-    [...ownershipParams, ...ownershipParams]
-  );
-  const replyDiscussionRecords = queryJsonRows(
-    db,
-    `
-      SELECT child.json
-      FROM discussions child
-      JOIN discussions parent ON parent.id = child.parent_discussion_id
-      WHERE child.parent_discussion_id <> ''
-        AND NOT (
-          child.created_by_user_id = ?
-          OR (child.created_by_user_id = '' AND child.created_by_username = ?)
-        )
-        AND (
-          parent.created_by_user_id = ?
-          OR (parent.created_by_user_id = '' AND parent.created_by_username = ?)
-        )
-    `,
-    [...ownershipParams, ...ownershipParams]
-  );
-  const annotationSupportIds = collectRelatedRecordIds([
-    ...ownedAnnotationRecords,
-    ...replyAnnotationRecords,
-  ], {
-    idKeys: ["id", "parent_annotation_id", "root_annotation_id"],
-  });
-  const discussionSupportIds = collectRelatedRecordIds([
-    ...ownedDiscussionRecords,
-    ...replyDiscussionRecords,
-  ], {
-    idKeys: ["id", "parent_discussion_id", "root_discussion_id"],
-  });
-  const relatedAnnotationRecords = queryJsonRowsByIds(db, "annotations", annotationSupportIds);
-  const relatedDiscussionRecords = queryJsonRowsByIds(db, "discussions", discussionSupportIds);
-  const paperIds = collectRelatedPaperIds([
-    ...uploadedPapers,
-    ...ownedAnnotationRecords,
-    ...ownedDiscussionRecords,
-    ...replyAnnotationRecords,
-    ...replyDiscussionRecords,
-  ]);
-  const papers = queryJsonRowsByIds(db, "papers", paperIds);
-  const papersById = new Map(papers.map((paper) => [paper.id, paper]));
-  const annotationsById = new Map(relatedAnnotationRecords.map((annotation) => [annotation.id, annotation]));
-  const discussionsById = new Map(relatedDiscussionRecords.map((discussion) => [discussion.id, discussion]));
-  const myAnnotations = [];
-  const repliesToMyAnnotations = [];
-
-  ownedAnnotationRecords.forEach((annotation) => {
-    myAnnotations.push(serializeAnnotationActivity(annotation, papersById, annotationsById));
-  });
-
-  replyAnnotationRecords.forEach((annotation) => {
-    repliesToMyAnnotations.push(
-      serializeReplyNotification(annotation, papersById, annotationsById)
-    );
-  });
-
-  ownedDiscussionRecords.forEach((discussion) => {
-    myAnnotations.push(serializeDiscussionActivity(discussion, papersById, discussionsById));
-  });
-
-  replyDiscussionRecords.forEach((discussion) => {
-    repliesToMyAnnotations.push(
-      serializeDiscussionReplyNotification(discussion, papersById, discussionsById)
-    );
-  });
-
-  uploadedPapers.sort(compareRecordsByActivityDesc("activity_at"));
-  myAnnotations.sort(compareRecordsByActivityDesc("activity_at"));
-  repliesToMyAnnotations.sort(compareRecordsByActivityDesc("activity_at"));
-
-  return {
-    uploadedPapers,
-    myAnnotations,
-    repliesToMyAnnotations,
-  };
-}
-
-function createCountMapFromRows(rows) {
-  const counts = new Map();
-
-  rows.forEach((row) => {
-    const key = String(row?.lookup_key || "").trim();
-
-    if (!key) {
-      return;
-    }
-
-    counts.set(key, Number(row?.count || 0));
-  });
-
-  return counts;
-}
-
-function queryJsonRows(db, query, params = []) {
-  return db
-    .prepare(query)
-    .all(...params)
-    .map((row) => JSON.parse(row.json));
-}
-
-function queryJsonRowsByIds(db, tableName, ids) {
-  if (!ids.length) {
-    return [];
-  }
-
-  const placeholders = ids.map(() => "?").join(", ");
-  return queryJsonRows(db, `SELECT json FROM ${tableName} WHERE id IN (${placeholders})`, ids);
-}
-
-function collectRelatedRecordIds(records, options = {}) {
-  const ids = new Set();
-
-  records.forEach((record) => {
-    (options.idKeys || []).forEach((key) => {
-      const value = String(record?.[key] || "").trim();
-
-      if (value) {
-        ids.add(value);
-      }
-    });
-  });
-
-  return Array.from(ids);
-}
-
-function collectRelatedPaperIds(records) {
-  const ids = new Set();
-
-  records.forEach((record) => {
-    const value = String(record?.paperId || record?.id || "").trim();
-
-    if (!value) {
-      return;
-    }
-
-    if (String(record?.paperId || "").trim()) {
-      ids.add(String(record.paperId).trim());
-      return;
-    }
-
-    if (String(record?.sourceUrl || "").trim()) {
-      ids.add(String(record.id).trim());
-    }
-  });
-
-  return Array.from(ids);
-}
-
-async function getPublicUserProfile(userId) {
-  const user = SQLITE_STORE.users.getById(userId);
-
-  if (!user) {
-    throw new HttpError(404, "用户不存在");
-  }
-
-  const dashboard = await getUserDashboard(user);
-
-  return {
-    user: serializeUser(user),
-    uploadedPapers: dashboard.uploadedPapers,
-    annotations: dashboard.myAnnotations,
-  };
-}
-
 async function saveAnnotation(paperId, body, currentUser) {
   const note = String(body.note || "").trim();
   const exact = String(body.exact || "");
@@ -2900,12 +2590,12 @@ async function ensureStorageFiles() {
   await fs.mkdir(HTML_DIR, { recursive: true });
   await fs.mkdir(ATTACHMENTS_DIR, { recursive: true });
   const storeState = await SQLITE_STORE.ensureReady();
+  await ensureDefaultUsers();
+  logOwnershipBackfillResult(SQLITE_STORE.backfillOwnership());
 
   if (storeState.addedSpeechCountColumn || storeState.migratedLegacyJson) {
     refreshAllPaperActivities();
   }
-
-  await ensureDefaultUsers();
 }
 
 async function getJsonCollectionLength(filePath) {
@@ -2941,6 +2631,33 @@ async function ensureDefaultUsers() {
       });
     }
   }
+}
+
+function logOwnershipBackfillResult(result) {
+  const updatedSummaries = Object.entries(result || {}).filter(([, stats]) => Number(stats?.updatedCount || 0) > 0);
+
+  if (updatedSummaries.length) {
+    console.log(
+      `Backfilled record ownership: ${updatedSummaries
+        .map(([tableName, stats]) => `${tableName}=${Number(stats.updatedCount || 0)}`)
+        .join(", ")}`
+    );
+  }
+
+  Object.entries(result || {}).forEach(([tableName, stats]) => {
+    if (!Number(stats?.unmatchedCount || 0)) {
+      return;
+    }
+
+    const usernames = (Array.isArray(stats.unmatchedUsernames) ? stats.unmatchedUsernames : [])
+      .filter(Boolean)
+      .slice(0, 5)
+      .join(", ");
+
+    console.warn(
+      `Ownership backfill skipped ${Number(stats.unmatchedCount || 0)} ${tableName} record(s) with unknown usernames${usernames ? `: ${usernames}` : ""}`
+    );
+  });
 }
 
 async function serveStaticAsset(request, pathname, response) {
@@ -3345,98 +3062,6 @@ function normalizeDiscussionRecord(discussion) {
     normalizedDiscussion.id;
 
   return normalizedDiscussion;
-}
-
-function serializeAnnotationActivity(annotation, papersById, annotationsById) {
-  const paper = papersById.get(annotation.paperId) || null;
-  const rootAnnotation =
-    annotationsById.get(getThreadRootAnnotationId(annotation)) || annotation;
-  const parentAnnotation =
-    annotationsById.get(annotation.parent_annotation_id) || rootAnnotation;
-
-  return {
-    ...annotation,
-    speech_type: "annotation",
-    is_reply: isReplyAnnotation(annotation),
-    thread_id: rootAnnotation.id,
-    thread_annotation_id: rootAnnotation.id,
-    thread_note: rootAnnotation.note,
-    parent_username: isReplyAnnotation(annotation) ? parentAnnotation.created_by_username || "" : "",
-    parent_note: isReplyAnnotation(annotation) ? parentAnnotation.note : "",
-    paperTitle: paper?.title || "文献已删除",
-    paperSourceUrl: paper?.sourceUrl || "",
-    paperPublished: paper?.published || "",
-    paperExists: Boolean(paper),
-    activity_at: annotation.created_at,
-  };
-}
-
-function serializeReplyNotification(annotation, papersById, annotationsById) {
-  const baseRecord = serializeAnnotationActivity(annotation, papersById, annotationsById);
-
-  return {
-    ...baseRecord,
-    reply_to_username: baseRecord.parent_username || "",
-    reply_to_note: baseRecord.parent_note || "",
-  };
-}
-
-function serializeDiscussionActivity(discussion, papersById, discussionsById) {
-  const paper = papersById.get(discussion.paperId) || null;
-  const rootDiscussion =
-    discussionsById.get(getThreadRootDiscussionId(discussion)) || discussion;
-  const parentDiscussion =
-    discussionsById.get(discussion.parent_discussion_id) || rootDiscussion;
-
-  return {
-    ...discussion,
-    speech_type: "discussion",
-    is_reply: isDiscussionReply(discussion),
-    thread_id: rootDiscussion.id,
-    thread_discussion_id: rootDiscussion.id,
-    thread_note: rootDiscussion.note,
-    parent_username: isDiscussionReply(discussion)
-      ? parentDiscussion.created_by_username || ""
-      : "",
-    parent_note: isDiscussionReply(discussion) ? parentDiscussion.note : "",
-    paperTitle: paper?.title || "文献已删除",
-    paperSourceUrl: paper?.sourceUrl || "",
-    paperPublished: paper?.published || "",
-    paperExists: Boolean(paper),
-    activity_at: discussion.created_at,
-  };
-}
-
-function serializeDiscussionReplyNotification(discussion, papersById, discussionsById) {
-  const baseRecord = serializeDiscussionActivity(discussion, papersById, discussionsById);
-
-  return {
-    ...baseRecord,
-    reply_to_username: baseRecord.parent_username || "",
-    reply_to_note: baseRecord.parent_note || "",
-  };
-}
-
-function compareAnnotationsByCreatedAt(left, right) {
-  return new Date(left.created_at || 0) - new Date(right.created_at || 0);
-}
-
-function compareDiscussionsByCreatedAt(left, right) {
-  return new Date(left.created_at || 0) - new Date(right.created_at || 0);
-}
-
-function compareRecordsByActivityDesc(fieldName) {
-  return (left, right) => new Date(right?.[fieldName] || 0) - new Date(left?.[fieldName] || 0);
-}
-
-function compareUsersForDisplay(left, right) {
-  const roleDifference = Number(getUserRole(right) === "admin") - Number(getUserRole(left) === "admin");
-
-  if (roleDifference) {
-    return roleDifference;
-  }
-
-  return String(left.username || "").localeCompare(String(right.username || ""), "zh-CN");
 }
 
 function dedupeRecordsById(records) {
@@ -4242,19 +3867,18 @@ function createAppServices() {
     fetchElsevierObjectBinary,
     fs,
     getAnnotationsByPaperId,
-    getAnnotationsByUserId,
     getCurrentUserFromRequest,
     getDiscussionsByPaperId,
     getJsonCollectionLength,
     getPaperById,
-    getPublicUserProfile,
     getSessionTokenFromRequest,
-    getUserDashboard,
     importPaperFromHtml,
     listPapersWithActivity,
-    listUsersWithStats,
     loginUser,
+    normalizeAnnotationRecord,
+    normalizeDiscussionRecord,
     normalizeMimeType,
+    normalizePaperRecord,
     path,
     readRequestJson,
     readSpeechMutationBody,
@@ -4268,6 +3892,7 @@ function createAppServices() {
     serializeUser,
     servePrivateStorageAsset,
     serveStaticAsset,
+    store: SQLITE_STORE,
     transferAdminRole,
     updateAnnotationById,
     updateDiscussionById,

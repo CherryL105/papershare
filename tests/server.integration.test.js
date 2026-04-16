@@ -632,6 +632,157 @@ describe("SQLite migration and API flows", () => {
     expect(papersResponse.body[0].latestSpeakerUsername).toBe("legacy");
   });
 
+  it("backfills username-only ownership during startup and keeps dashboard responses stable", async () => {
+    const storageDir = await createStorageDir();
+    const createdAt = "2026-04-15T00:00:00.000Z";
+    const paper = {
+      id: "paper-backfill-json",
+      sourceUrl: "https://example.org/backfill-json",
+      title: "Backfilled Paper",
+      created_by_user_id: "",
+      created_by_username: "admin",
+      createdAt,
+      updatedAt: createdAt,
+      fetchedAt: createdAt,
+      snapshotPath: "html/backfill-json.html",
+    };
+    const annotation = {
+      id: "annotation-backfill-root",
+      paperId: paper.id,
+      note: "Admin annotation",
+      exact: "Admin",
+      prefix: "",
+      suffix: "",
+      target_scope: "body",
+      start_offset: 0,
+      end_offset: 5,
+      created_by_user_id: "",
+      created_by_username: "admin",
+      created_at: "2026-04-15T00:01:00.000Z",
+      parent_annotation_id: "",
+      root_annotation_id: "annotation-backfill-root",
+      attachments: [],
+    };
+    const annotationReply = {
+      id: "annotation-backfill-reply",
+      paperId: paper.id,
+      note: "Member annotation reply",
+      exact: "Admin",
+      prefix: "",
+      suffix: "",
+      target_scope: "body",
+      start_offset: 0,
+      end_offset: 5,
+      created_by_user_id: "",
+      created_by_username: "member1",
+      created_at: "2026-04-15T00:02:00.000Z",
+      parent_annotation_id: "annotation-backfill-root",
+      root_annotation_id: "annotation-backfill-root",
+      attachments: [],
+    };
+    const discussion = {
+      id: "discussion-backfill-root",
+      paperId: paper.id,
+      note: "Admin discussion",
+      created_by_user_id: "",
+      created_by_username: "admin",
+      created_at: "2026-04-15T00:03:00.000Z",
+      parent_discussion_id: "",
+      root_discussion_id: "discussion-backfill-root",
+      attachments: [],
+    };
+    const discussionReply = {
+      id: "discussion-backfill-reply",
+      paperId: paper.id,
+      note: "Member discussion reply",
+      created_by_user_id: "",
+      created_by_username: "member1",
+      created_at: "2026-04-15T00:04:00.000Z",
+      parent_discussion_id: "discussion-backfill-root",
+      root_discussion_id: "discussion-backfill-root",
+      attachments: [],
+    };
+
+    await Promise.all([
+      fs.writeFile(
+        path.join(storageDir, "users.json"),
+        JSON.stringify(
+          [
+            {
+              id: "user-member",
+              username: "member1",
+              role: "member",
+              passwordHash: createLegacyPasswordHash("member-pass"),
+              createdAt,
+            },
+          ],
+          null,
+          2
+        ),
+        "utf8"
+      ),
+      fs.writeFile(path.join(storageDir, "sessions.json"), "[]\n", "utf8"),
+      fs.writeFile(path.join(storageDir, "papers.json"), JSON.stringify([paper], null, 2), "utf8"),
+      fs.writeFile(
+        path.join(storageDir, "annotations.json"),
+        JSON.stringify([annotation, annotationReply], null, 2),
+        "utf8"
+      ),
+      fs.writeFile(
+        path.join(storageDir, "discussions.json"),
+        JSON.stringify([discussion, discussionReply], null, 2),
+        "utf8"
+      ),
+    ]);
+
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    const loginResponse = await admin.post("/api/auth/login").send({
+      username: "admin",
+      password: "1234",
+    });
+    expect(loginResponse.status).toBe(200);
+
+    const db = new Database(path.join(storageDir, "papershare.sqlite"), { readonly: true });
+    const backfilledPaper = db
+      .prepare("SELECT created_by_user_id AS createdByUserId, json FROM papers WHERE id = ?")
+      .get(paper.id);
+    const backfilledReply = db
+      .prepare("SELECT created_by_user_id AS createdByUserId, json FROM annotations WHERE id = ?")
+      .get(annotationReply.id);
+
+    expect(backfilledPaper.createdByUserId).toBe("bootstrap-admin");
+    expect(JSON.parse(backfilledPaper.json).created_by_user_id).toBe("bootstrap-admin");
+    expect(backfilledReply.createdByUserId).toBe("user-member");
+    expect(JSON.parse(backfilledReply.json).created_by_user_id).toBe("user-member");
+    db.close();
+
+    const dashboardResponse = await admin.get("/api/me/dashboard");
+    expect(dashboardResponse.status).toBe(200);
+    expect(dashboardResponse.body.uploadedPapers).toHaveLength(1);
+    expect(dashboardResponse.body.myAnnotations).toHaveLength(2);
+    expect(dashboardResponse.body.repliesToMyAnnotations).toHaveLength(2);
+    expect(dashboardResponse.body.repliesToMyAnnotations[0].id).toBe("discussion-backfill-reply");
+
+    const usersResponse = await admin.get("/api/users");
+    expect(usersResponse.status).toBe(200);
+
+    const adminStats = usersResponse.body.find((user) => user.username === "admin");
+    const memberStats = usersResponse.body.find((user) => user.username === "member1");
+
+    expect(adminStats.uploadedPaperCount).toBe(1);
+    expect(adminStats.annotationCount).toBe(2);
+    expect(memberStats.uploadedPaperCount).toBe(0);
+    expect(memberStats.annotationCount).toBe(2);
+
+    const profileResponse = await admin.get("/api/users/bootstrap-admin/profile");
+    expect(profileResponse.status).toBe(200);
+    expect(profileResponse.body.uploadedPapers).toHaveLength(1);
+    expect(profileResponse.body.annotations).toHaveLength(2);
+  });
+
   it("backfills paper activity when upgrading an existing sqlite database", async () => {
     const storageDir = await createStorageDir();
     seedLegacySqliteWithoutSpeechCount(storageDir);
