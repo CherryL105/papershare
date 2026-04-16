@@ -21,7 +21,7 @@ function createApiRoutes(services) {
               user: session.user,
             },
             {
-              "Set-Cookie": http.serializeSessionCookie(request, session.token),
+              "Set-Cookie": auth.serializeSessionCookie(request, session.token),
             }
           );
         } catch (error) {
@@ -36,7 +36,7 @@ function createApiRoutes(services) {
       handler: async ({ currentUser, response }) => {
         http.sendJson(response, 200, {
           authenticated: Boolean(currentUser),
-          user: currentUser ? auth.serializeUser(currentUser) : null,
+          user: currentUser ? auth.serializeAuthenticatedUser(currentUser) : null,
         });
       },
     },
@@ -45,7 +45,7 @@ function createApiRoutes(services) {
       pattern: "/api/auth/logout",
       requiresAuth: false,
       handler: async ({ request, response }) => {
-        const sessionToken = http.getSessionTokenFromRequest(request);
+        const sessionToken = auth.getSessionTokenFromRequest(request);
 
         if (sessionToken) {
           await auth.deleteSession(sessionToken);
@@ -56,7 +56,7 @@ function createApiRoutes(services) {
           200,
           { ok: true },
           {
-            "Set-Cookie": http.serializeExpiredSessionCookie(request),
+            "Set-Cookie": auth.serializeExpiredSessionCookie(request),
           }
         );
       },

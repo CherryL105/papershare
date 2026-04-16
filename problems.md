@@ -2,13 +2,16 @@
 
 ## 一、架构与代码组织（最大问题）
 
-### 1. [部分完成] `src/server/core.js` 体量失控
-- `core.js` 已从 **4246 行** 收缩到 **1918 行**。本轮已经完成两阶段拆分：`speech + attachments` 迁入 `src/server/services/speech-service.js`（764 行），`papers/import + Elsevier` 迁入 `src/server/services/papers-service.js`（1727 行）。
+### 1. [已完成] `src/server/core.js` 体量失控
+- `core.js` 已从 **4246 行** 进一步收缩到 **945 行**。本轮收尾完成后，`auth/users` 与 `static/storage` 也已从 `core.js` 迁出，`core.js` 现在主要保留启动装配、环境与常量、record normalizer、multipart/http helper、少量共享纯 helper。
 - [已完成] `speech-service.js` 现在直接拥有批注/讨论的新增、回复、编辑、删除、批量清空、按论文读取、按用户聚合，以及附件草稿解析、保留/新增合并、文件写入、失败回滚、删除清理。
 - [已完成] `papers-service.js` 现在直接拥有文献抓取、HTML 导入、快照存储/读取、文献删除、Elsevier Full Text API 抓取、XML 转 HTML、对象图片代理。
+- [已完成] `auth-service.js` 现在直接拥有当前用户解析、登录/登出 session、cookie 序列化、密码 hash/verify 与 legacy rehash、认证态用户序列化。
+- [已完成] `users-service.js` 现在直接拥有改名、改密、创建成员、删除用户、管理员转让、bootstrap 用户初始化，以及用户名跨表同步、retain/purge 内容清理。
+- [已完成] `assets-service.js` 现在直接拥有静态资源与私有附件读取、路径安全校验、`ETag` / `Last-Modified` / `304` 协商缓存，以及启动时静态资源预热。
+- [已完成] `system-service.js` 现在直接拥有 `ensureRuntimeReady()`，统一执行目录创建、SQLite ready、bootstrap 用户校验、ownership backfill、activity backfill 与静态缓存预热。
 - [已完成] `createServices()` 已从“注入高层业务函数”切换为“注入 store / fs / path / ID 生成器 / normalizer / 配置等底层能力，由 service 自己实现流程”。`assets.fetchElsevierObject()` 也改为复用 papers domain，而不是继续从 `core.js` 透传。
-- [已完成] `tests/services.test.js` 已从透传型测试升级为真实 service 行为测试，覆盖 snapshot 读取、真实 `fetch()` 抓取、discussion 写入、Elsevier 资源代理等关键路径；`npm test` 当前全绿。
-- 剩余在 `core.js` 的主要职责已经收敛为：启动与环境装配、auth/users、静态资源与私有存储服务、record normalizer、少量共享 helper。后续如果还要继续瘦身，优先考虑再拆 `auth/users` 或 `static/storage`，但它们已经不是当前最大的结构瓶颈。
+- [已完成] `tests/services.test.js` 已升级为真实 owner 行为测试，补上 `auth/users/assets/system` 的直接行为覆盖；`tests/server.integration.test.js` 也补上静态 `304` 与 `dist` 缺失回归；`npm test` 当前全绿。
 
 ### 2. [已完成] 前端双轨期已经收尾，legacy runtime 已移除
 - [已完成] 目录页现在完整由 Preact 驱动：`CatalogLibraryView`、`CatalogProfileView`、`CatalogPasswordView`、`CatalogUserManagementView`、`CatalogMembersView` 全部接入共享 `client-store`，catalog 页不再依赖 `dangerouslySetInnerHTML` 或 legacy DOM 渲染。
@@ -47,9 +50,10 @@
 - `/api/users` 统计和 dashboard 归属判断现在只按 `created_by_user_id` 聚合，不再维护“按 id”和“按 username”两套 count map。
 - 无法匹配现存用户的 orphan 记录会保留原样并输出 warning，但不会再进入新的 userId-only 统计路径。
 
-### 9. [部分完成] `serveStaticAsset` 仍是磁盘直读
-- [已完成] 静态资源已经补上 `Cache-Control`、`ETag`、`Last-Modified` 和 `304` 协商缓存，安全性上也保留了 `CLIENT_DIST_DIR` 边界校验。
-- 仍未完成的是内存级缓存：当前每次请求还是 `fs.stat`，`GET` 还会继续 `fs.readFile`。如果部署场景以单机 Node 直出为主，可以考虑启动时索引 + 热文件弱缓存；如果前面有 Nginx/Caddy/CDN，这项优先级可以后移。
+### 9. [已完成] `serveStaticAsset` 仍是磁盘直读
+- 静态资源现在会在启动阶段递归扫描 `dist` 并预热进内存缓存，缓存项包含 `content / size / contentType / etag / lastModified / cacheControl`。
+- `serveStaticAsset()` 对 `GET` / `HEAD` / 条件请求 已改为完全复用内存缓存，不再在热路径上执行运行时 `fs.stat` / `fs.readFile`；安全性上仍保留路径边界校验与 `403/404` 处理。
+- 若 `dist` 缺失，启动只会输出 warning，不会影响 API 初始化；静态资源请求会稳定返回 `404`。私有附件 `/api/storage/*` 仍保持磁盘直读，不进入静态资源缓存。
 
 ## 四、其它细节
 
@@ -60,6 +64,6 @@
 
 ## 优先级建议（按 ROI）
 
-1. **静态资源内存缓存**。
-2. **如果还想继续压缩服务端复杂度，再拆 `auth/users` 或 `static/storage`**，但这已经是“锦上添花”而不是当前主瓶颈。
-3. **如果未来出现多进程部署，再把 dashboard 进程内缓存升级为跨进程可感知的版本键/共享缓存**。
+1. **如果未来出现多进程部署，再把 dashboard 进程内缓存与静态资源版本感知升级为跨进程可感知的方案**。
+2. **如果 `dist` 体量明显增长，再把当前“全量预热”静态缓存升级为按大小受限的 LRU/分层策略**。
+3. **如果还想继续压缩 `core.js`，可以再把 multipart/http parsing helper 下沉成更细的 utility 或 service，但这已经不是当前瓶颈**。

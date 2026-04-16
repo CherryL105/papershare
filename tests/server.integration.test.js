@@ -11,6 +11,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const DIST_DIR = path.join(ROOT_DIR, "dist");
 const SERVER_MODULE_CACHE_FRAGMENT = `${path.sep}src${path.sep}server${path.sep}`;
 const BOOTSTRAP_ADMIN_PASSWORD = "bootstrap-pass";
 const UPDATED_BOOTSTRAP_ADMIN_PASSWORD = "bootstrap-pass-updated";
@@ -1258,6 +1259,49 @@ describe("SQLite migration and API flows", () => {
     expect(cssAssetResponse.status).toBe(200);
     expect(assetResponse.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
     expect(cssAssetResponse.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+
+    const assetNotModifiedResponse = await request(app)
+      .get(assetPath)
+      .set("If-None-Match", assetResponse.headers.etag);
+    expect(assetNotModifiedResponse.status).toBe(304);
+    expect(assetNotModifiedResponse.text).toBe("");
+
+    const cssNotModifiedResponse = await request(app)
+      .get(cssAssetPath)
+      .set("If-Modified-Since", cssAssetResponse.headers["last-modified"]);
+    expect(cssNotModifiedResponse.status).toBe(304);
+    expect(cssNotModifiedResponse.text).toBe("");
+  });
+
+  it("keeps API routes available when dist is missing and returns 404 for static pages", async () => {
+    const distBackupDir = `${DIST_DIR}.missing-${Date.now()}`;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await fs.rename(DIST_DIR, distBackupDir);
+
+    try {
+      const storageDir = await createStorageDir();
+      const core = await loadCoreForStorage(storageDir);
+      const app = core.createHttpServer();
+      const admin = request.agent(app);
+
+      await loginAs(admin);
+
+      const papersResponse = await admin.get("/api/papers");
+      expect(papersResponse.status).toBe(200);
+
+      const homeResponse = await request(app).get("/");
+      expect(homeResponse.status).toBe(404);
+      expect(homeResponse.body.error).toBe("Not found");
+
+      const paperResponse = await request(app).get("/paper.html");
+      expect(paperResponse.status).toBe(404);
+      expect(paperResponse.body.error).toBe("Not found");
+
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      await fs.rename(distBackupDir, DIST_DIR);
+    }
   });
 
   it("accepts multipart annotation uploads through the streaming parser", async () => {

@@ -13,45 +13,21 @@ function createServices(deps) {
   };
   const http = createHttpService({
     applyCorsHeaders: deps.applyCorsHeaders,
-    getSessionTokenFromRequest: deps.getSessionTokenFromRequest,
     readRequestJson: deps.readRequestJson,
     readSpeechMutationBody: deps.readSpeechMutationBody,
     sendJson: deps.sendJson,
-    serializeExpiredSessionCookie: deps.serializeExpiredSessionCookie,
-    serializeSessionCookie: deps.serializeSessionCookie,
-  });
-  const system = createSystemService({
-    collectionFiles: {
-      annotations: deps.ANNOTATIONS_FILE,
-      discussions: deps.DISCUSSIONS_FILE,
-      papers: deps.PAPERS_FILE,
-    },
-    ensureStorageFiles: deps.ensureStorageFiles,
-    getJsonCollectionLength: deps.getJsonCollectionLength,
   });
   const auth = createAuthService({
-    deleteSession: deps.deleteSession,
-    getCurrentUserFromRequest: deps.getCurrentUserFromRequest,
-    loginUser: deps.loginUser,
-    serializeCurrentUser: deps.serializeCurrentUser || deps.serializeUser,
-    serializeUser: deps.serializeUser,
+    sessionCookieName: deps.SESSION_COOKIE_NAME,
+    store: deps.store,
   });
   const dashboard = createDashboardService({
     HttpError: deps.HttpError,
     normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
     normalizeDiscussionRecord: deps.normalizeDiscussionRecord,
     normalizePaperRecord: deps.normalizePaperRecord,
-    serializeUser: deps.serializeUser,
+    serializeUser: auth.serializeUser,
     store: deps.store,
-  });
-  const users = createUsersService({
-    assertAdminUser: deps.assertAdminUser,
-    changeUserPassword: deps.changeUserPassword,
-    changeUsername: deps.changeUsername,
-    createMemberUser: deps.createMemberUser,
-    dashboardService: dashboard,
-    deleteUserById: deps.deleteUserById,
-    transferAdminRole: deps.transferAdminRole,
   });
   const speech = createSpeechService({
     attachmentsDir: deps.ATTACHMENTS_DIR,
@@ -93,9 +69,44 @@ function createServices(deps) {
     store: deps.store,
   });
   const assets = createAssetsService({
+    HttpError: deps.HttpError,
+    attachmentsDir: deps.ATTACHMENTS_DIR,
+    clientDistDir: deps.CLIENT_DIST_DIR,
     fetchElsevierObject: papers.fetchElsevierObject,
-    servePrivateStorageAsset: deps.servePrivateStorageAsset,
-    serveStaticAsset: deps.serveStaticAsset,
+    fs: deps.fs,
+    mimeTypeByExtension: deps.MIME_TYPE_BY_EXTENSION,
+    normalizeStorageRecordPath: deps.normalizeStorageRecordPath,
+    path: deps.path,
+    resolveStorageAbsolutePath: deps.resolveStorageAbsolutePath,
+    sendJson: deps.sendJson,
+    staticAssetCacheControl: deps.STATIC_ASSET_CACHE_CONTROL,
+    staticHashedAssetCacheControl: deps.STATIC_HASHED_ASSET_CACHE_CONTROL,
+    staticHtmlCacheControl: deps.STATIC_HTML_CACHE_CONTROL,
+  });
+  const users = createUsersService({
+    HttpError: deps.HttpError,
+    authService: auth,
+    dashboardService: dashboard,
+    deleteSnapshotByPath: papers.deleteSnapshotByPath,
+    deleteSpeechAttachmentsForRecords: speech.deleteAttachmentsForRecords,
+    normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
+    normalizeDiscussionRecord: deps.normalizeDiscussionRecord,
+    normalizePaperRecord: deps.normalizePaperRecord,
+    store: deps.store,
+  });
+  const system = createSystemService({
+    assetsService: assets,
+    attachmentsDir: deps.ATTACHMENTS_DIR,
+    collectionFiles: {
+      annotations: deps.ANNOTATIONS_FILE,
+      discussions: deps.DISCUSSIONS_FILE,
+      papers: deps.PAPERS_FILE,
+    },
+    fs: deps.fs,
+    htmlDir: deps.HTML_DIR,
+    storageDir: deps.STORAGE_DIR,
+    store: deps.store,
+    usersService: users,
   });
 
   return {

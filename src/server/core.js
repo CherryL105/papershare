@@ -3,7 +3,6 @@ const fsSync = require("fs");
 const fs = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
-const { promisify } = require("util");
 const Busboy = require("busboy");
 const { createRouter } = require("./router");
 const { createServices } = require("./services");
@@ -14,12 +13,6 @@ const {
 } = require("./services/papers-service");
 const { TABLES, createSqliteStore } = require("./storage/sqlite-store");
 const {
-  getThreadRootAnnotationId,
-  getThreadRootDiscussionId,
-  getUserRole,
-  isAdminUser,
-  isDiscussionReply,
-  isReplyAnnotation,
   normalizeMimeType,
   stripBackgroundImagesFromInlineStyle,
   supportsArticleImagesForSourceUrl,
@@ -76,7 +69,6 @@ const EXTENSION_BY_MIME_TYPE = new Map(
 const STATIC_ASSET_CACHE_CONTROL = "public, max-age=300, must-revalidate";
 const STATIC_HASHED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const STATIC_HTML_CACHE_CONTROL = "no-cache";
-const scryptAsync = promisify(crypto.scrypt);
 const SQLITE_STORE = createSqliteStore({
   storageDir: STORAGE_DIR,
   jsonFilePaths: {
@@ -165,571 +157,8 @@ async function routeRequest(request, response) {
   return appRouter(request, response);
 }
 
-async function getCurrentUserFromRequest(request) {
-  const sessionToken = getSessionTokenFromRequest(request);
-
-  if (!sessionToken) {
-    return null;
-  }
-
-  const session = SQLITE_STORE.sessions.getByToken(sessionToken);
-
-  if (!session) {
-    return null;
-  }
-
-  return SQLITE_STORE.users.getById(session.userId) || null;
-}
-
-async function loginUser(body) {
-  const username = String(body.username || "").trim();
-  const password = String(body.password || "");
-
-  if (!username || !password) {
-    throw new Error("用户名和密码不能为空");
-  }
-
-  let user = SQLITE_STORE.users.getByUsername(username);
-  const passwordVerification = await verifyPassword(password, user?.passwordHash);
-
-  if (!user || !passwordVerification.ok) {
-    throw new Error("用户名或密码错误");
-  }
-
-  const token = createSessionToken();
-  const createdAt = new Date().toISOString();
-
-  if (passwordVerification.needsRehash) {
-    user = {
-      ...user,
-      passwordHash: await hashPassword(password),
-      updatedAt: createdAt,
-    };
-  }
-
-  SQLITE_STORE.runInTransaction((repositories) => {
-    if (passwordVerification.needsRehash) {
-      repositories.users.update(user);
-    }
-
-    repositories.sessions.replaceSessionForUser({
-      createdAt,
-      token,
-      userId: user.id,
-    });
-  });
-
-  return {
-    token,
-    user: serializeAuthenticatedUser(user),
-  };
-}
-
-async function deleteSession(sessionToken) {
-  SQLITE_STORE.sessions.deleteByToken(sessionToken);
-}
-
-async function changeUserPassword(userId, body) {
-  const currentPassword = String(body.currentPassword || "");
-  const nextPassword = String(body.nextPassword || "");
-
-  if (!currentPassword || !nextPassword) {
-    throw new Error("当前密码和新密码不能为空");
-  }
-
-  if (nextPassword.length < 4) {
-    throw new Error("新密码至少需要 4 位");
-  }
-
-  if (currentPassword === nextPassword) {
-    throw new Error("新密码不能与当前密码相同");
-  }
-
-  const user = SQLITE_STORE.users.getById(userId);
-
-  if (!user) {
-    throw new Error("用户不存在");
-  }
-
-  if (!(await verifyPassword(currentPassword, user.passwordHash)).ok) {
-    throw new Error("当前密码错误");
-  }
-
-  SQLITE_STORE.users.update({
-    ...user,
-    mustChangePassword: false,
-    passwordHash: await hashPassword(nextPassword),
-    updatedAt: new Date().toISOString(),
-  });
-}
-
-async function changeUsername(userId, body) {
-  const nextUsername = normalizeUsername(body.username);
-  const users = SQLITE_STORE.users.listAll();
-  const userIndex = users.findIndex((item) => item.id === userId);
-
-  if (userIndex === -1) {
-    throw new HttpError(404, "用户不存在");
-  }
-
-  const currentUser = users[userIndex];
-  validateUsername(nextUsername, users, currentUser.id);
-
-  if (currentUser.username === nextUsername) {
-    throw new Error("新用户名不能与当前用户名相同");
-  }
-
-  const updatedUser = {
-    ...currentUser,
-    username: nextUsername,
-    updatedAt: new Date().toISOString(),
-  };
-
-  SQLITE_STORE.runInTransaction((repositories) => {
-    repositories.users.update(updatedUser);
-    syncUsernameAcrossRecords(repositories, currentUser, nextUsername);
-  });
-
-  return serializeUser(updatedUser);
-}
-
-async function createMemberUser(body) {
-  const username = normalizeUsername(body.username);
-  const password = String(body.password || "");
-  const users = SQLITE_STORE.users.listAll();
-  validateUsername(username, users);
-  validatePasswordForCreation(password);
-
-  const createdAt = new Date().toISOString();
-  const user = {
-    id: createUserId(username),
-    username,
-    role: "member",
-    mustChangePassword: false,
-    passwordHash: await hashPassword(password),
-    createdAt,
-    updatedAt: createdAt,
-  };
-
-  SQLITE_STORE.users.insert(user);
-  return serializeUser(user);
-}
-
-function collectPaperIdsFromRecords(records) {
-  return Array.from(
-    new Set(
-      (Array.isArray(records) ? records : [])
-        .map((record) => String(record?.paperId || record?.id || "").trim())
-        .filter(Boolean)
-    )
-  );
-}
-
-function refreshPaperActivitiesInRepositories(repositories, paperIds) {
-  repositories.papers.refreshActivitiesByIds(paperIds);
-}
-
-function refreshAllPaperActivities() {
-  SQLITE_STORE.runInTransaction((repositories) => {
-    repositories.papers.backfillActivityFields();
-  });
-}
-
-function syncUsernameAcrossRecords(repositories, currentUser, nextUsername) {
-  const currentUserId = String(currentUser?.id || "").trim();
-  const currentUsername = String(currentUser?.username || "").trim();
-  const affectedPaperIds = new Set();
-
-  repositories.papers.listByUser(currentUserId, currentUsername).forEach((paper) => {
-    repositories.papers.update(
-      normalizePaperRecord({
-        ...paper,
-        created_by_user_id: currentUserId || paper.created_by_user_id,
-        created_by_username: nextUsername,
-      })
-    );
-  });
-
-  repositories.annotations.listByUser(currentUserId, currentUsername).forEach((annotation) => {
-    if (annotation.paperId) {
-      affectedPaperIds.add(annotation.paperId);
-    }
-
-    repositories.annotations.update(
-      normalizeAnnotationRecord({
-        ...annotation,
-        created_by_user_id: currentUserId || annotation.created_by_user_id,
-        created_by_username: nextUsername,
-      })
-    );
-  });
-
-  repositories.discussions.listByUser(currentUserId, currentUsername).forEach((discussion) => {
-    if (discussion.paperId) {
-      affectedPaperIds.add(discussion.paperId);
-    }
-
-    repositories.discussions.update(
-      normalizeDiscussionRecord({
-        ...discussion,
-        created_by_user_id: currentUserId || discussion.created_by_user_id,
-        created_by_username: nextUsername,
-      })
-    );
-  });
-
-  refreshPaperActivitiesInRepositories(repositories, Array.from(affectedPaperIds));
-}
-
-async function deleteUserById(currentUserId, userId, options = {}) {
-  if (!userId) {
-    throw new Error("缺少用户 ID");
-  }
-
-  if (userId === currentUserId) {
-    throw new Error("不能删除当前登录的管理员账号");
-  }
-
-  const user = SQLITE_STORE.users.getById(userId);
-
-  if (!user) {
-    throw new HttpError(404, "用户不存在");
-  }
-
-  if (getUserRole(user) === "admin") {
-    throw new Error("不能删除管理员账号");
-  }
-
-  const purgeContent = options.purgeContent === true;
-  const deletedContent = purgeContent ? await deleteUserOwnedContent(userId) : null;
-
-  SQLITE_STORE.runInTransaction((repositories) => {
-    repositories.sessions.deleteByUserId(userId);
-    repositories.users.deleteById(userId);
-  });
-
-  return {
-    deletedUserId: userId,
-    purgeContent,
-    deletedContent,
-  };
-}
-
-async function transferAdminRole(currentUserId, targetUserId) {
-  if (!targetUserId) {
-    throw new Error("缺少目标用户");
-  }
-
-  if (targetUserId === currentUserId) {
-    throw new Error("不能转让给当前管理员自己");
-  }
-
-  const users = SQLITE_STORE.users.listAll();
-  const currentUserIndex = users.findIndex((item) => item.id === currentUserId);
-  const targetUserIndex = users.findIndex((item) => item.id === targetUserId);
-
-  if (currentUserIndex === -1) {
-    throw new HttpError(404, "当前管理员不存在");
-  }
-
-  if (targetUserIndex === -1) {
-    throw new HttpError(404, "目标用户不存在");
-  }
-
-  const currentUser = users[currentUserIndex];
-  const targetUser = users[targetUserIndex];
-
-  if (getUserRole(targetUser) === "admin") {
-    throw new Error("目标用户已经是管理员");
-  }
-
-  const updatedAt = new Date().toISOString();
-  const nextCurrentUser = {
-    ...currentUser,
-    role: "member",
-    updatedAt,
-  };
-  const nextTargetUser = {
-    ...targetUser,
-    role: "admin",
-    updatedAt,
-  };
-
-  users[currentUserIndex] = nextCurrentUser;
-  users[targetUserIndex] = nextTargetUser;
-  SQLITE_STORE.runInTransaction((repositories) => {
-    repositories.users.update(nextCurrentUser);
-    repositories.users.update(nextTargetUser);
-  });
-
-  return {
-    currentUser: serializeUser(nextCurrentUser),
-    targetUser: serializeUser(nextTargetUser),
-  };
-}
-
-async function deleteUserOwnedContent(userId) {
-  const user = SQLITE_STORE.users.getById(userId);
-
-  if (!user) {
-    return {
-      paperCount: 0,
-      annotationCount: 0,
-      discussionCount: 0,
-    };
-  }
-
-  const deletedPapers = SQLITE_STORE.papers
-    .listByUser(user.id, user.username)
-    .map((paper) => normalizePaperRecord(paper));
-  const deletedPaperIds = new Set(deletedPapers.map((paper) => paper.id));
-  const deletedAnnotationsFromPapers = [];
-  const deletedDiscussionsFromPapers = [];
-
-  deletedPapers.forEach((paper) => {
-    deletedAnnotationsFromPapers.push(
-      ...SQLITE_STORE.annotations.listByPaperId(paper.id).map((annotation) =>
-        normalizeAnnotationRecord(annotation)
-      )
-    );
-    deletedDiscussionsFromPapers.push(
-      ...SQLITE_STORE.discussions.listByPaperId(paper.id).map((discussion) =>
-        normalizeDiscussionRecord(discussion)
-      )
-    );
-  });
-
-  const ownedAnnotations = SQLITE_STORE.annotations
-    .listByUser(user.id, user.username)
-    .map((annotation) => normalizeAnnotationRecord(annotation))
-    .filter((annotation) => !deletedPaperIds.has(annotation.paperId));
-  const ownedDiscussions = SQLITE_STORE.discussions
-    .listByUser(user.id, user.username)
-    .map((discussion) => normalizeDiscussionRecord(discussion))
-    .filter((discussion) => !deletedPaperIds.has(discussion.paperId));
-  const affectedPaperIds = collectPaperIdsFromRecords([...ownedAnnotations, ...ownedDiscussions]);
-  let deletedAnnotations = [...deletedAnnotationsFromPapers];
-  let deletedDiscussions = [...deletedDiscussionsFromPapers];
-
-  SQLITE_STORE.runInTransaction((repositories) => {
-    deletedPapers.forEach((paper) => {
-      repositories.annotations.deleteByPaperId(paper.id);
-      repositories.discussions.deleteByPaperId(paper.id);
-    });
-
-    repositories.papers.deleteByIds(Array.from(deletedPaperIds));
-    deletedAnnotations = dedupeRecordsById([
-      ...deletedAnnotations,
-      ...deleteOwnedSpeechRecordsFromStore(repositories.annotations, ownedAnnotations, {
-        getRootId: getThreadRootAnnotationId,
-        isReply: isReplyAnnotation,
-        normalizeRecord: normalizeAnnotationRecord,
-        parentKey: "parent_annotation_id",
-      }),
-    ]);
-    deletedDiscussions = dedupeRecordsById([
-      ...deletedDiscussions,
-      ...deleteOwnedSpeechRecordsFromStore(repositories.discussions, ownedDiscussions, {
-        getRootId: getThreadRootDiscussionId,
-        isReply: isDiscussionReply,
-        normalizeRecord: normalizeDiscussionRecord,
-        parentKey: "parent_discussion_id",
-      }),
-    ]);
-    refreshPaperActivitiesInRepositories(repositories, affectedPaperIds);
-  });
-
-  const services = ensureAppServices();
-
-  await Promise.all([
-    Promise.all(deletedPapers.map((paper) => services.papers.deleteSnapshotByPath(paper.snapshotPath))),
-    services.speech.deleteAttachmentsForRecords([...deletedAnnotations, ...deletedDiscussions]),
-  ]);
-
-  return {
-    paperCount: deletedPapers.length,
-    annotationCount: deletedAnnotations.length,
-    discussionCount: deletedDiscussions.length,
-  };
-}
-
-function deleteOwnedSpeechRecordsFromStore(repository, ownedRecords, options) {
-  const deletedRecords = [];
-
-  ownedRecords
-    .filter((record) => !options.isReply(record))
-    .forEach((record) => {
-      const currentRecord = repository.getById(record.id);
-
-      if (!currentRecord) {
-        return;
-      }
-
-      const threadRecords = dedupeRecordsById([
-        options.normalizeRecord(currentRecord),
-        ...repository.listByRootId(record.id).map((item) => options.normalizeRecord(item)),
-      ]);
-
-      repository.deleteByIds(threadRecords.map((item) => item.id));
-      deletedRecords.push(...threadRecords);
-    });
-
-  ownedRecords
-    .filter((record) => options.isReply(record))
-    .forEach((record) => {
-      const currentRecord = repository.getById(record.id);
-
-      if (!currentRecord) {
-        return;
-      }
-
-      const normalizedRecord = options.normalizeRecord(currentRecord);
-      const fallbackParentId =
-        String(normalizedRecord[options.parentKey] || "").trim() || options.getRootId(normalizedRecord);
-
-      repository.reparentChildren(record.id, fallbackParentId);
-      repository.deleteById(record.id);
-      deletedRecords.push(normalizedRecord);
-    });
-
-  return dedupeRecordsById(deletedRecords);
-}
-
 async function ensureStorageFiles() {
-  await fs.mkdir(STORAGE_DIR, { recursive: true });
-  await fs.mkdir(HTML_DIR, { recursive: true });
-  await fs.mkdir(ATTACHMENTS_DIR, { recursive: true });
-  const storeState = await SQLITE_STORE.ensureReady();
-  await ensureDefaultUsers();
-  logOwnershipBackfillResult(SQLITE_STORE.backfillOwnership());
-
-  if (storeState.addedSpeechCountColumn || storeState.migratedLegacyJson) {
-    refreshAllPaperActivities();
-  }
-}
-
-async function getJsonCollectionLength(filePath) {
-  return SQLITE_STORE.getCollectionLength(filePath);
-}
-
-async function ensureDefaultUsers() {
-  const users = SQLITE_STORE.users.listAll();
-  const usersById = new Map(users.map((user) => [user.id, user]));
-  const usersByUsername = new Map(users.map((user) => [user.username, user]));
-
-  for (const defaultUser of DEFAULT_USERS) {
-    const existingUser = usersById.get(defaultUser.id) || usersByUsername.get(defaultUser.username);
-
-    if (!existingUser) {
-      const { passwordEnvVar, ...defaultUserRecord } = defaultUser;
-      const password = readRequiredBootstrapPassword(defaultUser);
-
-      SQLITE_STORE.users.insert({
-        ...defaultUserRecord,
-        mustChangePassword: true,
-        passwordHash: await hashPassword(password),
-      });
-      continue;
-    }
-
-    const nextRole = defaultUser.role || getUserRole(existingUser);
-    const nextCreatedAt = existingUser.createdAt || defaultUser.createdAt;
-
-    if (existingUser.role !== nextRole || existingUser.createdAt !== nextCreatedAt) {
-      SQLITE_STORE.users.update({
-        ...existingUser,
-        role: nextRole,
-        createdAt: nextCreatedAt,
-      });
-    }
-  }
-}
-
-function logOwnershipBackfillResult(result) {
-  const updatedSummaries = Object.entries(result || {}).filter(([, stats]) => Number(stats?.updatedCount || 0) > 0);
-
-  if (updatedSummaries.length) {
-    console.log(
-      `Backfilled record ownership: ${updatedSummaries
-        .map(([tableName, stats]) => `${tableName}=${Number(stats.updatedCount || 0)}`)
-        .join(", ")}`
-    );
-  }
-
-  Object.entries(result || {}).forEach(([tableName, stats]) => {
-    if (!Number(stats?.unmatchedCount || 0)) {
-      return;
-    }
-
-    const usernames = (Array.isArray(stats.unmatchedUsernames) ? stats.unmatchedUsernames : [])
-      .filter(Boolean)
-      .slice(0, 5)
-      .join(", ");
-
-    console.warn(
-      `Ownership backfill skipped ${Number(stats.unmatchedCount || 0)} ${tableName} record(s) with unknown usernames${usernames ? `: ${usernames}` : ""}`
-    );
-  });
-}
-
-async function serveStaticAsset(request, pathname, response) {
-  const targetPath =
-    pathname === "/"
-      ? "/src/client/catalog/index.html"
-      : pathname === "/paper.html"
-        ? "/src/client/detail/paper.html"
-        : pathname;
-  const relativeTargetPath = decodeURIComponent(targetPath).replace(/^[/\\]+/, "");
-  const normalizedPath = path.normalize(relativeTargetPath).replace(/^(\.\.[/\\])+/, "");
-  const absolutePath = path.join(CLIENT_DIST_DIR, normalizedPath);
-
-  if (!absolutePath.startsWith(CLIENT_DIST_DIR) || isForbiddenStaticPath(normalizedPath)) {
-    sendJson(response, 403, { error: "Forbidden" });
-    return;
-  }
-
-  try {
-    const stat = await fs.stat(absolutePath);
-
-    if (!stat.isFile()) {
-      sendJson(response, 404, { error: "Not found" });
-      return;
-    }
-
-    const fileExtension = path.extname(absolutePath).toLowerCase();
-    const contentType = MIME_TYPE_BY_EXTENSION[fileExtension] || "application/octet-stream";
-    const etag = createWeakEtagFromStat(stat);
-    const lastModified = stat.mtime.toUTCString();
-    const cacheControl = resolveStaticCacheControl(normalizedPath, fileExtension);
-
-    if (isRequestFresh(request, etag, stat.mtime)) {
-      response.writeHead(304, {
-        "Cache-Control": cacheControl,
-        ETag: etag,
-        "Last-Modified": lastModified,
-      });
-      response.end();
-      return;
-    }
-
-    response.writeHead(200, {
-      "Cache-Control": cacheControl,
-      "Content-Length": stat.size,
-      "Content-Type": contentType,
-      ETag: etag,
-      "Last-Modified": lastModified,
-    });
-
-    if (request.method === "HEAD") {
-      response.end();
-      return;
-    }
-
-    const content = await fs.readFile(absolutePath);
-    response.end(content);
-  } catch (error) {
-    sendJson(response, 404, { error: "Not found" });
-  }
+  await ensureAppServices().system.ensureRuntimeReady(DEFAULT_USERS);
 }
 
 async function readRequestJson(request) {
@@ -1066,128 +495,6 @@ function normalizeDiscussionRecord(discussion) {
   return normalizedDiscussion;
 }
 
-function dedupeRecordsById(records) {
-  const seenIds = new Set();
-
-  return records.filter((record) => {
-    const recordId = String(record?.id || "").trim();
-
-    if (!recordId || seenIds.has(recordId)) {
-      return false;
-    }
-
-    seenIds.add(recordId);
-    return true;
-  });
-}
-
-function deleteOwnedAnnotationsFromCollection(annotations, userId) {
-  const ownedThreadIds = new Set(
-    annotations
-      .filter(
-        (annotation) =>
-          !isReplyAnnotation(annotation) && String(annotation.created_by_user_id || "").trim() === userId
-      )
-      .map((annotation) => annotation.id)
-  );
-  let nextAnnotations = annotations.filter(
-    (annotation) => !ownedThreadIds.has(getThreadRootAnnotationId(annotation))
-  );
-  const deletedRecords = annotations.filter((annotation) =>
-    ownedThreadIds.has(getThreadRootAnnotationId(annotation))
-  );
-  const ownedReplyIds = nextAnnotations
-    .filter(
-      (annotation) =>
-        isReplyAnnotation(annotation) && String(annotation.created_by_user_id || "").trim() === userId
-    )
-    .map((annotation) => annotation.id);
-
-  ownedReplyIds.forEach((annotationId) => {
-    const annotation = nextAnnotations.find((item) => item.id === annotationId);
-
-    if (!annotation) {
-      return;
-    }
-
-    const fallbackParentId =
-      String(annotation.parent_annotation_id || "").trim() || getThreadRootAnnotationId(annotation);
-    deletedRecords.push(annotation);
-    nextAnnotations = nextAnnotations
-      .filter((item) => item.id !== annotationId)
-      .map((item) => {
-        if (item.parent_annotation_id !== annotationId) {
-          return item;
-        }
-
-        return normalizeAnnotationRecord({
-          ...item,
-          parent_annotation_id: fallbackParentId,
-        });
-      });
-  });
-
-  return {
-    records: nextAnnotations,
-    deletedRecords: dedupeRecordsById(deletedRecords),
-  };
-}
-
-function deleteOwnedDiscussionsFromCollection(discussions, userId) {
-  const ownedThreadIds = new Set(
-    discussions
-      .filter(
-        (discussion) =>
-          !isDiscussionReply(discussion) &&
-          String(discussion.created_by_user_id || "").trim() === userId
-      )
-      .map((discussion) => discussion.id)
-  );
-  let nextDiscussions = discussions.filter(
-    (discussion) => !ownedThreadIds.has(getThreadRootDiscussionId(discussion))
-  );
-  const deletedRecords = discussions.filter((discussion) =>
-    ownedThreadIds.has(getThreadRootDiscussionId(discussion))
-  );
-  const ownedReplyIds = nextDiscussions
-    .filter(
-      (discussion) =>
-        isDiscussionReply(discussion) &&
-        String(discussion.created_by_user_id || "").trim() === userId
-    )
-    .map((discussion) => discussion.id);
-
-  ownedReplyIds.forEach((discussionId) => {
-    const discussion = nextDiscussions.find((item) => item.id === discussionId);
-
-    if (!discussion) {
-      return;
-    }
-
-    const fallbackParentId =
-      String(discussion.parent_discussion_id || "").trim() ||
-      getThreadRootDiscussionId(discussion);
-    deletedRecords.push(discussion);
-    nextDiscussions = nextDiscussions
-      .filter((item) => item.id !== discussionId)
-      .map((item) => {
-        if (item.parent_discussion_id !== discussionId) {
-          return item;
-        }
-
-        return normalizeDiscussionRecord({
-          ...item,
-          parent_discussion_id: fallbackParentId,
-        });
-      });
-  });
-
-  return {
-    records: nextDiscussions,
-    deletedRecords: dedupeRecordsById(deletedRecords),
-  };
-}
-
 function normalizeKeywords(value) {
   return [...new Set(String(value || "").split(/[\n,，;；|]/).map(cleanTextValue))].filter(
     Boolean
@@ -1346,194 +653,12 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function parseCookies(cookieHeader) {
-  return String(cookieHeader || "")
-    .split(";")
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-    .reduce((cookies, segment) => {
-      const separatorIndex = segment.indexOf("=");
-
-      if (separatorIndex === -1) {
-        return cookies;
-      }
-
-      const key = segment.slice(0, separatorIndex).trim();
-      const value = segment.slice(separatorIndex + 1).trim();
-      cookies[key] = decodeURIComponent(value);
-      return cookies;
-    }, {});
-}
-
-function getSessionTokenFromRequest(request) {
-  const authorizationHeader = String(request.headers.authorization || "").trim();
-
-  if (/^Bearer\s+/i.test(authorizationHeader)) {
-    return authorizationHeader.replace(/^Bearer\s+/i, "").trim();
-  }
-
-  const cookies = parseCookies(request.headers.cookie);
-  return cookies[SESSION_COOKIE_NAME] || "";
-}
-
-function serializeSessionCookie(request, token) {
-  return [
-    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    ...(isSecureRequest(request) ? ["Secure"] : []),
-  ].join("; ");
-}
-
-function serializeExpiredSessionCookie(request) {
-  return [
-    `${SESSION_COOKIE_NAME}=`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    "Max-Age=0",
-    ...(isSecureRequest(request) ? ["Secure"] : []),
-  ].join("; ");
-}
-
-function serializeUser(user) {
-  return {
-    id: user.id,
-    username: user.username,
-    role: getUserRole(user),
-    createdAt: user.createdAt || "",
-  };
-}
-
-function serializeAuthenticatedUser(user) {
-  return {
-    ...serializeUser(user),
-    mustChangePassword: Boolean(user?.mustChangePassword),
-  };
-}
-
-function normalizeUsername(value) {
-  return String(value || "").trim();
-}
-
-function getUsernameLookupKey(username) {
-  return normalizeUsername(username).toLowerCase();
-}
-
-function validateUsername(username, users, excludedUserId = "") {
-  if (!username) {
-    throw new Error("用户名不能为空");
-  }
-
-  if (username.length < 2) {
-    throw new Error("用户名至少需要 2 个字符");
-  }
-
-  if (username.length > 32) {
-    throw new Error("用户名不能超过 32 个字符");
-  }
-
-  if (/\s/.test(username)) {
-    throw new Error("用户名不能包含空格");
-  }
-
-  const nextUsernameKey = getUsernameLookupKey(username);
-  const duplicatedUser = users.find(
-    (user) => user.id !== excludedUserId && getUsernameLookupKey(user.username) === nextUsernameKey
-  );
-
-  if (duplicatedUser) {
-    throw new Error("该用户名已被占用");
-  }
-}
-
-function validatePasswordForCreation(password) {
-  if (!password) {
-    throw new Error("初始密码不能为空");
-  }
-
-  if (password.length < 4) {
-    throw new Error("初始密码至少需要 4 位");
-  }
-}
-
-function readRequiredBootstrapPassword(defaultUser) {
-  const passwordEnvVar = String(defaultUser?.passwordEnvVar || "").trim();
-  const username = String(defaultUser?.username || "").trim() || defaultUser?.id || "bootstrap-user";
-
-  if (!passwordEnvVar) {
-    throw new Error(`Bootstrap 用户 ${username} 未配置 passwordEnvVar`);
-  }
-
-  if (!Object.prototype.hasOwnProperty.call(process.env, passwordEnvVar)) {
-    throw new Error(
-      `Bootstrap 用户 ${username} 缺少初始密码环境变量 ${passwordEnvVar}，请在首次启动前显式配置`
-    );
-  }
-
-  const password = String(process.env[passwordEnvVar] ?? "");
-
-  try {
-    validatePasswordForCreation(password);
-  } catch (error) {
-    throw new Error(
-      `Bootstrap 用户 ${username} 的初始密码环境变量 ${passwordEnvVar} 无效：${error.message}`
-    );
-  }
-
-  return password;
-}
-
-function assertAdminUser(user) {
-  if (!isAdminUser(user)) {
-    throw new HttpError(403, "仅管理员可执行此操作");
-  }
-}
-
 class HttpError extends Error {
   constructor(statusCode, message) {
     super(message);
     this.name = "HttpError";
     this.statusCode = statusCode;
   }
-}
-
-async function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const derivedKey = Buffer.from(await scryptAsync(String(password), salt, 64)).toString("hex");
-  return `scrypt$${salt}$${derivedKey}`;
-}
-
-async function verifyPassword(password, passwordHash) {
-  const normalizedHash = String(passwordHash || "").trim();
-
-  if (!normalizedHash) {
-    return { ok: false, needsRehash: false };
-  }
-
-  if (normalizedHash.startsWith("scrypt$")) {
-    const parts = normalizedHash.split("$");
-
-    if (parts.length !== 3 || !parts[1] || !parts[2]) {
-      return { ok: false, needsRehash: false };
-    }
-
-    const derivedKey = Buffer.from(await scryptAsync(String(password), parts[1], 64));
-    const expectedKey = Buffer.from(parts[2], "hex");
-    const ok =
-      derivedKey.length === expectedKey.length &&
-      crypto.timingSafeEqual(derivedKey, expectedKey);
-
-    return { ok, needsRehash: false };
-  }
-
-  const ok = createLegacyPasswordHash(password) === normalizedHash;
-  return { ok, needsRehash: ok };
-}
-
-function createLegacyPasswordHash(password) {
-  return crypto.createHash("sha256").update(String(password)).digest("hex");
 }
 
 function createPaperId() {
@@ -1548,49 +673,33 @@ function createDiscussionId() {
   return `discussion-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
 }
 
-function createUserId(username) {
-  const slug = String(username || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 24);
-  const suffix = crypto.randomBytes(3).toString("hex");
-
-  return slug ? `user-${slug}-${suffix}` : `user-${Date.now()}-${suffix}`;
-}
-
 function createAppServices() {
   return createServices({
     ANNOTATIONS_FILE,
     ATTACHMENTS_DIR,
+    CLIENT_DIST_DIR,
     DISCUSSIONS_FILE,
+    HTML_DIR,
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_COUNT,
     MAX_TOTAL_ATTACHMENT_BYTES,
+    MIME_TYPE_BY_EXTENSION,
     PAPERS_FILE,
     PORT,
+    SESSION_COOKIE_NAME,
     STORAGE_DIR,
+    STATIC_ASSET_CACHE_CONTROL,
+    STATIC_HASHED_ASSET_CACHE_CONTROL,
+    STATIC_HTML_CACHE_CONTROL,
     HttpError,
     applyCorsHeaders,
-    assertAdminUser,
-    changeUserPassword,
-    changeUsername,
     createAnnotationId,
     createAttachmentId,
     createDiscussionId,
-    createMemberUser,
     createPaperId,
-    deleteSession,
-    deleteUserById,
     enforceSnapshotArticleImagePolicy,
-    ensureStorageFiles,
     formatLimitInMb,
     fs,
-    getCurrentUserFromRequest,
-    getJsonCollectionLength,
-    getSessionTokenFromRequest,
-    loginUser,
     normalizeAnnotationRecord,
     normalizeAttachmentRecord,
     normalizeAttachmentRecords,
@@ -1602,14 +711,8 @@ function createAppServices() {
     resolveAttachmentDescriptor,
     resolveStorageAbsolutePath,
     sendJson,
-    serializeExpiredSessionCookie,
-    serializeSessionCookie,
-    serializeCurrentUser: serializeAuthenticatedUser,
-    serializeUser,
-    servePrivateStorageAsset,
-    serveStaticAsset,
+    normalizeStorageRecordPath,
     store: SQLITE_STORE,
-    transferAdminRole,
   });
 }
 
@@ -1624,10 +727,6 @@ module.exports = {
 
 function createAttachmentId() {
   return `attachment-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
-}
-
-function createSessionToken() {
-  return `session-${Date.now()}-${crypto.randomBytes(16).toString("hex")}`;
 }
 
 function resolveStorageDirectory(configuredPath) {
@@ -1747,49 +846,6 @@ function buildPrivateStorageUrl(storagePath) {
     .join("/")}`;
 }
 
-function isForbiddenStaticPath(normalizedPath) {
-  const segments = String(normalizedPath || "")
-    .replaceAll("\\", "/")
-    .split("/")
-    .filter(Boolean);
-  const firstSegment = segments[0] || "";
-
-  return [".git", ".local", "storage"].includes(firstSegment) || firstSegment.startsWith(".env");
-}
-
-async function servePrivateStorageAsset(storagePath, response) {
-  const normalizedStoragePath = normalizeStorageRecordPath(storagePath);
-
-  if (!normalizedStoragePath.startsWith("attachments/")) {
-    throw new HttpError(404, "资源不存在");
-  }
-
-  const absolutePath = resolveStorageAbsolutePath(normalizedStoragePath);
-
-  if (!absolutePath.startsWith(ATTACHMENTS_DIR)) {
-    throw new HttpError(403, "Forbidden");
-  }
-
-  try {
-    const stat = await fs.stat(absolutePath);
-
-    if (!stat.isFile()) {
-      throw new HttpError(404, "资源不存在");
-    }
-
-    const fileExtension = path.extname(absolutePath).toLowerCase();
-    const contentType = MIME_TYPE_BY_EXTENSION[fileExtension] || "application/octet-stream";
-    const content = await fs.readFile(absolutePath);
-    response.writeHead(200, { "Content-Type": contentType, "Content-Length": content.length });
-    response.end(content);
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      throw new HttpError(404, "资源不存在");
-    }
-    throw error;
-  }
-}
-
 function applyCorsHeaders(request, response) {
   const origin = String(request.headers.origin || "").trim();
 
@@ -1806,16 +862,6 @@ function applyCorsHeaders(request, response) {
   response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   response.setHeader("Vary", "Origin");
-}
-
-function resolveStaticCacheControl(normalizedPath, fileExtension) {
-  if (fileExtension === ".html") {
-    return STATIC_HTML_CACHE_CONTROL;
-  }
-
-  return /-[A-Za-z0-9_-]{8,}\.[^.]+$/.test(path.basename(normalizedPath))
-    ? STATIC_HASHED_ASSET_CACHE_CONTROL
-    : STATIC_ASSET_CACHE_CONTROL;
 }
 
 function parseAllowedOrigins(rawValue) {
@@ -1896,54 +942,4 @@ function registerGracefulShutdown(server) {
       });
     });
   });
-}
-
-function accumulateOwnedRecordCount(record, countsByUserId, countsByUsername) {
-  const recordUserId = String(record?.created_by_user_id || "").trim();
-  const recordUsername = String(record?.created_by_username || "").trim();
-
-  if (recordUserId) {
-    countsByUserId.set(recordUserId, (countsByUserId.get(recordUserId) || 0) + 1);
-    return;
-  }
-
-  if (recordUsername) {
-    countsByUsername.set(recordUsername, (countsByUsername.get(recordUsername) || 0) + 1);
-  }
-}
-
-function getOwnedRecordCountForUser(user, countsByUserId, countsByUsername) {
-  const userId = String(user?.id || "").trim();
-  const username = String(user?.username || "").trim();
-
-  return (countsByUserId.get(userId) || 0) + (countsByUsername.get(username) || 0);
-}
-
-function createWeakEtagFromStat(stat) {
-  return `W/"${Number(stat.size || 0).toString(16)}-${Math.floor(stat.mtimeMs || 0).toString(16)}"`;
-}
-
-function isRequestFresh(request, etag, lastModifiedDate) {
-  const ifNoneMatchHeader = String(request.headers["if-none-match"] || "").trim();
-
-  if (ifNoneMatchHeader) {
-    return ifNoneMatchHeader
-      .split(",")
-      .map((value) => value.trim())
-      .includes(etag);
-  }
-
-  const ifModifiedSinceHeader = String(request.headers["if-modified-since"] || "").trim();
-
-  if (!ifModifiedSinceHeader) {
-    return false;
-  }
-
-  const ifModifiedSince = new Date(ifModifiedSinceHeader).getTime();
-
-  if (!Number.isFinite(ifModifiedSince)) {
-    return false;
-  }
-
-  return Math.floor(new Date(lastModifiedDate).getTime() / 1000) <= Math.floor(ifModifiedSince / 1000);
 }

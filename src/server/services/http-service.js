@@ -28,15 +28,12 @@ function createHttpService(deps) {
 
   return {
     applyCorsHeaders: deps.applyCorsHeaders,
-    getSessionTokenFromRequest: deps.getSessionTokenFromRequest,
     readJson: deps.readRequestJson,
     readPaperHtmlImportRequest,
     readPaperRequest,
     readSpeechMutation: deps.readSpeechMutationBody,
     sendError,
     sendJson: deps.sendJson,
-    serializeExpiredSessionCookie: deps.serializeExpiredSessionCookie,
-    serializeSessionCookie: deps.serializeSessionCookie,
   };
 }
 
