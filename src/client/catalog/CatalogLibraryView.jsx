@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { useClientState } from "../shared/client-store.js";
 import {
   formatDateTime,
-  getClientState,
-  getVisiblePapers,
   openPaperDetail,
+} from "../shared/session-store.js";
+import {
+  getVisiblePapers,
   setPaperFormStatus,
   setPaperSearch,
   shouldOfferBrowserFetchFallback,
   submitPaper,
-  useClientState,
-} from "../shared/client-store.js";
+} from "./catalog-store.js";
+import { getClientState } from "../shared/client-store.js";
 
 export function CatalogLibraryView({ hidden = false }) {
   const snapshot = useClientState();

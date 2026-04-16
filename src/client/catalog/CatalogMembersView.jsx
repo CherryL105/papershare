@@ -1,12 +1,13 @@
 import {
+  useClientState,
+} from "../shared/client-store.js";
+import {
   formatDateTime,
   openAnnotationLocation,
   openDiscussionLocation,
   openPaperDetail,
-  selectMember,
-  setMemberProfilePanel,
-  useClientState,
-} from "../shared/client-store.js";
+} from "../shared/session-store.js";
+import { selectMember, setMemberProfilePanel } from "./catalog-store.js";
 import { getSpeechDisplayText, truncate } from "./catalog-helpers.js";
 
 export function CatalogMembersView({ hidden = false }) {

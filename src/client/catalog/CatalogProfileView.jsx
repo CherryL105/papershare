@@ -1,14 +1,16 @@
 import {
   deleteActivity,
   deletePaperById,
+  setCatalogView,
+  setProfilePanel,
+} from "./catalog-store.js";
+import { useClientState } from "../shared/client-store.js";
+import {
   formatDateTime,
   openAnnotationLocation,
   openDiscussionLocation,
   openPaperDetail,
-  setCatalogView,
-  setProfilePanel,
-  useClientState,
-} from "../shared/client-store.js";
+} from "../shared/session-store.js";
 import {
   formatUserBadge,
   getSpeechDeleteLabel,

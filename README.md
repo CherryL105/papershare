@@ -121,7 +121,15 @@ npm start
 注：如果远程连接服务器，想在关闭终端后仍保持端口开放，请使用`pm2`，而非`npm start`。
 
 - 前端页面源码位于 `src/client/`，其中 `src/client/catalog/index.html` 和 `src/client/detail/paper.html` 是 Vite 多页入口。
+- 当前前端状态层已按 domain 拆分：
+  - `src/client/shared/client-store.js`：状态容器、订阅机制、测试辅助。
+  - `src/client/shared/session-store.js`：认证、会话恢复、API 请求、跨页导航。
+  - `src/client/shared/speech-helpers.js`：批注/讨论排序、reply/thread 规则、附件编辑与表单拼装等共享纯函数。
+  - `src/client/catalog/catalog-store.js`：catalog、profile、members、user-management 相关 action。
+  - `src/client/detail/detail-store.js`：detail 页面初始化、路由同步、批注/讨论 CRUD、编辑态管理。
+  - `src/client/detail/detail-helpers.js`：reader DOM 处理、HTML 提取、高亮恢复、公式渲染、图片 fallback。
 - `dist/` 目录只是构建输出，服务端实际只读取 `dist/`；不要直接修改 `dist/` 里的文件。
+- 如果修改了 `src/client/` 下的前端源码，提交前请执行 `npm run build`，把最新构建结果同步到 `dist/`。
 
 - 安装
     ```bash

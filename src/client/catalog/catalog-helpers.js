@@ -1,5 +1,5 @@
 import * as sharedModule from "../../../shared/papershare-shared.js";
-import { getRecordNoteDisplay } from "../detail/detail-helpers.js";
+import { getRecordNoteDisplay } from "../shared/speech-helpers.js";
 
 const shared = sharedModule?.default || sharedModule;
 const { getUserRole, isAdminUser } = shared;

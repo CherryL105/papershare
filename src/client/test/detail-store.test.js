@@ -2,19 +2,22 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  getClientState,
+  resetClientStoreForTests,
+  setClientStateForTests,
+} from "../shared/client-store.js";
+import {
   clearSelectedPaperAnnotations,
   deleteSelectedDiscussion,
-  getClientState,
   initializeDetailPage,
-  resetClientStoreForTests,
   saveAnnotation,
   saveDetailEdit,
   saveDiscussionReply,
-  setClientStateForTests,
+  selectPaper,
   setDetailComposerDraft,
   setDetailEditDraft,
   startDetailEdit,
-} from "../shared/client-store.js";
+} from "../detail/detail-store.js";
 
 function createJsonResponse(body, init = {}) {
   return {
@@ -22,6 +25,17 @@ function createJsonResponse(body, init = {}) {
     status: init.status ?? 200,
     json: async () => body,
   };
+}
+
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+
+  return { promise, reject, resolve };
 }
 
 function createPaper(overrides = {}) {
@@ -218,6 +232,121 @@ describe("detail client store", () => {
     expect(getClientState().detail.selectedAnnotationId).toBe("annotation-1");
     expect(getClientState().detail.selectedReplyId).toBe("reply-1");
     expect(getClientState().detail.annotationNavigationTargetId).toBe("annotation-1");
+  });
+
+  it("starts loading snapshot content in parallel when the list item already has snapshot metadata", async () => {
+    const detailResponse = createDeferred();
+
+    setClientStateForTests({
+      auth: {
+        currentUser: {
+          id: "user-1",
+          username: "alice",
+        },
+        serverReady: true,
+      },
+      papers: {
+        items: [createPaper({ hasSnapshot: true, snapshotPath: "html/paper-1.html" })],
+      },
+    });
+
+    globalThis.fetch = vi.fn((input) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/papers/paper-1")) {
+        return detailResponse.promise;
+      }
+
+      if (url.endsWith("/api/papers/paper-1/annotations")) {
+        return Promise.resolve(createJsonResponse([createAnnotation()]));
+      }
+
+      if (url.endsWith("/api/papers/paper-1/discussions")) {
+        return Promise.resolve(createJsonResponse([createDiscussion()]));
+      }
+
+      if (url.endsWith("/api/papers/paper-1/content")) {
+        return Promise.resolve(
+          createJsonResponse({
+            rawHtml: "<html><body><article><p>Parallel snapshot.</p></article></body></html>",
+          })
+        );
+      }
+
+      return Promise.resolve(createJsonResponse({}));
+    });
+
+    const selectionPromise = selectPaper("paper-1");
+    await Promise.resolve();
+
+    expect(globalThis.fetch.mock.calls.some(([input]) => String(input).endsWith("/api/papers/paper-1/content"))).toBe(
+      true
+    );
+
+    detailResponse.resolve(createJsonResponse(createPaper({ journal: "Nature" })));
+    await selectionPromise;
+
+    expect(getClientState().detail.articleHtml).toContain("Parallel snapshot.");
+  });
+
+  it("falls back to a late snapshot content request when legacy list data omits snapshot metadata", async () => {
+    const detailResponse = createDeferred();
+
+    setClientStateForTests({
+      auth: {
+        currentUser: {
+          id: "user-1",
+          username: "alice",
+        },
+        serverReady: true,
+      },
+      papers: {
+        items: [createPaper({ hasSnapshot: false, snapshotPath: "" })],
+      },
+    });
+
+    globalThis.fetch = vi.fn((input) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/papers/paper-1")) {
+        return detailResponse.promise;
+      }
+
+      if (url.endsWith("/api/papers/paper-1/annotations")) {
+        return Promise.resolve(createJsonResponse([createAnnotation()]));
+      }
+
+      if (url.endsWith("/api/papers/paper-1/discussions")) {
+        return Promise.resolve(createJsonResponse([createDiscussion()]));
+      }
+
+      if (url.endsWith("/api/papers/paper-1/content")) {
+        return Promise.resolve(
+          createJsonResponse({
+            rawHtml: "<html><body><article><p>Fallback snapshot.</p></article></body></html>",
+          })
+        );
+      }
+
+      return Promise.resolve(createJsonResponse({}));
+    });
+
+    const selectionPromise = selectPaper("paper-1");
+    await Promise.resolve();
+
+    expect(globalThis.fetch.mock.calls.some(([input]) => String(input).endsWith("/api/papers/paper-1/content"))).toBe(
+      false
+    );
+
+    detailResponse.resolve(
+      createJsonResponse(createPaper({ hasSnapshot: true, snapshotPath: "html/paper-1.html" }))
+    );
+    await selectionPromise;
+
+    expect(globalThis.fetch.mock.calls.filter(([input]) => String(input).endsWith("/api/papers/paper-1/content"))).toHaveLength(
+      1
+    );
+    expect(getClientState().detail.articleHtml).toContain("Fallback snapshot.");
   });
 
   it("handles detail thread mutations through the shared store", async () => {

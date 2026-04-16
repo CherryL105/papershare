@@ -1,6 +1,12 @@
 import { useEffect, useRef } from "preact/hooks";
 import {
-  buildApiUrl,
+  useClientState,
+} from "../shared/client-store.js";
+import { buildApiUrl, navigateToLibraryIndex, openPaperDetail, formatDateTime } from "../shared/session-store.js";
+import {
+  addDetailComposerAttachments,
+  addDetailEditAttachments,
+  cancelDetailEdit,
   clearDetailComposerAttachments,
   clearDetailEditAttachments,
   clearPendingSelection,
@@ -12,8 +18,6 @@ import {
   deleteSelectedPaper,
   handleDetailHashChange,
   initializeDetailPage,
-  navigateToLibraryIndex,
-  openPaperDetail,
   removeDetailComposerAttachment,
   removeDetailEditAttachment,
   saveAnnotation,
@@ -30,16 +34,17 @@ import {
   setLibraryPanel,
   setPendingSelection,
   startDetailEdit,
-  cancelDetailEdit,
-  addDetailComposerAttachments,
-  addDetailEditAttachments,
-  useClientState,
-} from "../shared/client-store.js";
+} from "./detail-store.js";
+import {
+  capturePendingSelection,
+  installArticleImageFallbacks,
+  renderArticleMath,
+  restoreAnnotationHighlights,
+} from "./detail-helpers.js";
 import {
   ATTACHMENT_INPUT_ACCEPT,
   buildAttachmentUrl,
   canMutateRecord,
-  capturePendingSelection,
   formatFileSize,
   getAnnotationScopeLabel,
   getAttachmentCategory,
@@ -51,11 +56,7 @@ import {
   getReplyRelationText,
   getTopLevelAnnotations,
   getTopLevelDiscussions,
-  installArticleImageFallbacks,
-  renderArticleMath,
-  restoreAnnotationHighlights,
-} from "./detail-helpers.js";
-import { formatDateTime } from "../shared/client-store.js";
+} from "../shared/speech-helpers.js";
 
 export function DetailLibraryView() {
   const snapshot = useClientState();

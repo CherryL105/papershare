@@ -1,13 +1,9 @@
 import { useEffect, useState } from "preact/hooks";
 import { AppHeader } from "../components/AppHeader.jsx";
 import { AuthGate } from "../components/AuthGate.jsx";
-import {
-  initializeCatalogPage,
-  login,
-  logout,
-  setCatalogView,
-  useClientState,
-} from "../shared/client-store.js";
+import { useClientState } from "../shared/client-store.js";
+import { login, logout } from "../shared/session-store.js";
+import { initializeCatalogPage, setCatalogView } from "./catalog-store.js";
 import { CatalogLibraryView } from "./CatalogLibraryView.jsx";
 import { CatalogMembersView } from "./CatalogMembersView.jsx";
 import { CatalogPasswordView } from "./CatalogPasswordView.jsx";

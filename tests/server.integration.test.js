@@ -1373,6 +1373,60 @@ describe("SQLite migration and API flows", () => {
     expect(invalidAnnotationResponse.body.error).toBe("批注内容和附件不能同时为空");
   });
 
+  it("returns stable 404 payloads for paper-scoped speech routes when the paper does not exist", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const server = app.listen(0);
+    const admin = request.agent(server);
+
+    try {
+      await loginAs(admin);
+
+      const missingPaperId = "paper-missing";
+      const missingRoutes = [
+        admin.get(`/api/papers/${missingPaperId}`),
+        admin.get(`/api/papers/${missingPaperId}/annotations`),
+        admin
+          .post(`/api/papers/${missingPaperId}/annotations`)
+          .send({
+            exact: "Missing",
+            note: "Missing",
+            prefix: "",
+            suffix: "",
+            target_scope: "body",
+            start_offset: 0,
+            end_offset: 7,
+          }),
+        admin.delete(`/api/papers/${missingPaperId}/annotations`),
+        admin.get(`/api/papers/${missingPaperId}/discussions`),
+        admin
+          .post(`/api/papers/${missingPaperId}/discussions`)
+          .send({
+            note: "Missing",
+          }),
+      ];
+
+      const responses = await Promise.all(missingRoutes);
+
+      responses.forEach((response) => {
+        expect(response.status).toBe(404);
+        expect(response.body).toEqual({ error: "文献不存在" });
+      });
+    } finally {
+      await new Promise((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        });
+      });
+    }
+  });
+
   it("imports Nature papers from source links by fetching HTML snapshots", async () => {
     const storageDir = await createStorageDir();
     const sourceUrl = "https://www.nature.com/articles/s41586-026-00001-1";

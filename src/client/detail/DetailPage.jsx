@@ -2,7 +2,9 @@ import { useEffect, useState } from "preact/hooks";
 import { AppHeader } from "../components/AppHeader.jsx";
 import { AuthGate } from "../components/AuthGate.jsx";
 import { DetailLibraryView } from "./DetailLibraryView.jsx";
-import { initializeDetailPage, login, logout, useClientState } from "../shared/client-store.js";
+import { useClientState } from "../shared/client-store.js";
+import { login, logout } from "../shared/session-store.js";
+import { initializeDetailPage } from "./detail-store.js";
 
 export function DetailPage() {
   const snapshot = useClientState();

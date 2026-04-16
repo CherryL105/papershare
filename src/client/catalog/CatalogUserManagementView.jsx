@@ -2,11 +2,11 @@ import { useEffect, useState } from "preact/hooks";
 import {
   createUser,
   deleteUser,
-  formatDateTime,
   setCatalogView,
   transferAdmin,
-  useClientState,
-} from "../shared/client-store.js";
+} from "./catalog-store.js";
+import { useClientState } from "../shared/client-store.js";
+import { formatDateTime } from "../shared/session-store.js";
 import { formatUserBadge, isCurrentUserAdmin } from "./catalog-helpers.js";
 
 export function CatalogUserManagementView({ hidden = false }) {

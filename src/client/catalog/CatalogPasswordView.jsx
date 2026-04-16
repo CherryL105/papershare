@@ -1,10 +1,10 @@
 import { useEffect, useState } from "preact/hooks";
+import { useClientState } from "../shared/client-store.js";
 import {
   changePassword,
   changeUsername,
   setCatalogView,
-  useClientState,
-} from "../shared/client-store.js";
+} from "./catalog-store.js";
 
 export function CatalogPasswordView({ hidden = false }) {
   const snapshot = useClientState();

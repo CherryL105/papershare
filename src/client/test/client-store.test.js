@@ -2,16 +2,18 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  getClientState,
+  resetClientStoreForTests,
+  setClientStateForTests,
+} from "../shared/client-store.js";
+import {
   changePassword,
   changeUsername,
   createUser,
-  getClientState,
   initializeCatalogPage,
-  resetClientStoreForTests,
-  setClientStateForTests,
   submitPaper,
   transferAdmin,
-} from "../shared/client-store.js";
+} from "../catalog/catalog-store.js";
 
 function createJsonResponse(body, init = {}) {
   return {
@@ -184,6 +186,13 @@ describe("client store", () => {
     expect(getClientState().profile.usernameStatus).toBe("用户名更新成功");
     expect(getClientState().papers.items[0]?.created_by_username).toBe("alice-renamed");
     expect(getClientState().members.allUsers[0]?.username).toBe("alice-renamed");
+    expect(getClientState().detail.selectedPaperId).toBe("paper-1");
+    expect(globalThis.fetch.mock.calls.some(([input]) => String(input).endsWith("/api/papers/paper-1/annotations"))).toBe(
+      true
+    );
+    expect(globalThis.fetch.mock.calls.some(([input]) => String(input).endsWith("/api/papers/paper-1/discussions"))).toBe(
+      true
+    );
   });
 
   it("clears the must-change-password gate after a successful password update", async () => {
