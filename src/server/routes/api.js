@@ -112,6 +112,7 @@ function createApiRoutes(services) {
     {
       method: "POST",
       pattern: "/api/me/password",
+      allowPasswordChangeRequired: true,
       requiresAuth: true,
       handler: async ({ currentUser, request, response }) => {
         try {

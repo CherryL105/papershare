@@ -30,6 +30,7 @@ function createSqliteStore(options) {
   let db = null;
   let repositories = null;
   let schemaState = {
+    addedMustChangePasswordColumn: false,
     addedSpeechCountColumn: false,
   };
 
@@ -217,17 +218,17 @@ function createRepositories(db) {
 
 function createUserRepository(db) {
   const selectAllStatement = db.prepare(`
-    SELECT json
+    SELECT json, must_change_password
     FROM users
     ORDER BY username COLLATE NOCASE ASC, rowid ASC
   `);
   const selectByIdStatement = db.prepare(`
-    SELECT json
+    SELECT json, must_change_password
     FROM users
     WHERE id = ?
   `);
   const selectByUsernameStatement = db.prepare(`
-    SELECT json
+    SELECT json, must_change_password
     FROM users
     WHERE username = ? COLLATE NOCASE
     LIMIT 1
@@ -239,6 +240,7 @@ function createUserRepository(db) {
       username = @username,
       role = @role,
       password_hash = @password_hash,
+      must_change_password = @must_change_password,
       created_at = @created_at,
       updated_at = @updated_at,
       json = @json
@@ -258,17 +260,17 @@ function createUserRepository(db) {
       return deleteByIdStatement.run(normalizeText(userId)).changes;
     },
     getById(userId) {
-      return parseJsonRow(selectByIdStatement.get(normalizeText(userId)));
+      return parseUserRow(selectByIdStatement.get(normalizeText(userId)));
     },
     getByUsername(username) {
-      return parseJsonRow(selectByUsernameStatement.get(normalizeText(username)));
+      return parseUserRow(selectByUsernameStatement.get(normalizeText(username)));
     },
     insert(user) {
       insertStatement.run(buildRecordParams(TABLES.USERS, user));
       return user;
     },
     listAll() {
-      return parseJsonRows(selectAllStatement.all());
+      return selectAllStatement.all().map(parseUserRow);
     },
     update(user) {
       updateStatement.run(buildRecordParams(TABLES.USERS, user));
@@ -876,6 +878,7 @@ function ensureSchema(db) {
       username TEXT NOT NULL UNIQUE,
       role TEXT NOT NULL DEFAULT 'member',
       password_hash TEXT NOT NULL,
+      must_change_password INTEGER NOT NULL DEFAULT 0,
       created_at TEXT,
       updated_at TEXT,
       json TEXT NOT NULL
@@ -944,6 +947,9 @@ function ensureSchema(db) {
   `);
 
   return {
+    addedMustChangePasswordColumn: ensureTableColumn(db, "users", "must_change_password", () => {
+      db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0");
+    }),
     addedSpeechCountColumn: ensureTableColumn(db, "papers", "speech_count", () => {
       db.exec("ALTER TABLE papers ADD COLUMN speech_count INTEGER NOT NULL DEFAULT 0");
     }),
@@ -1013,8 +1019,26 @@ function replaceCollectionSync(db, tableName, items) {
 function createInsertStatement(tableName) {
   if (tableName === TABLES.USERS) {
     return `
-      INSERT INTO users (id, username, role, password_hash, created_at, updated_at, json)
-      VALUES (@id, @username, @role, @password_hash, @created_at, @updated_at, @json)
+      INSERT INTO users (
+        id,
+        username,
+        role,
+        password_hash,
+        must_change_password,
+        created_at,
+        updated_at,
+        json
+      )
+      VALUES (
+        @id,
+        @username,
+        @role,
+        @password_hash,
+        @must_change_password,
+        @created_at,
+        @updated_at,
+        @json
+      )
     `;
   }
 
@@ -1155,6 +1179,7 @@ function buildRecordParams(tableName, record) {
       username: normalizeText(item.username),
       role: normalizeText(item.role || "member"),
       password_hash: normalizeText(item.passwordHash),
+      must_change_password: item.mustChangePassword ? 1 : 0,
       created_at: normalizeText(item.createdAt),
       updated_at: normalizeText(item.updatedAt),
       json,
@@ -1221,6 +1246,17 @@ function parseJsonRow(row) {
 
 function parseJsonRows(rows) {
   return rows.map((row) => JSON.parse(row.json));
+}
+
+function parseUserRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    ...JSON.parse(row.json),
+    mustChangePassword: Boolean(row.must_change_password),
+  };
 }
 
 function listByIds(db, tableName, ids) {

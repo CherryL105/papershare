@@ -43,6 +43,18 @@ function createRouter(services, routeDefinitions) {
         return;
       }
 
+      if (
+        route.requiresAuth &&
+        currentUser?.mustChangePassword &&
+        !route.allowPasswordChangeRequired
+      ) {
+        http.sendJson(response, 403, {
+          code: "PASSWORD_CHANGE_REQUIRED",
+          error: "首次登录后请先修改初始密码",
+        });
+        return;
+      }
+
       await route.handler({
         core: services,
         currentUser,
@@ -67,6 +79,7 @@ function normalizeRouteDefinition(route) {
     methods: Array.isArray(route.methods) ? route.methods : [route.method],
     pattern:
       route.pattern instanceof URLPattern ? route.pattern : new URLPattern({ pathname: route.pattern }),
+    allowPasswordChangeRequired: route.allowPasswordChangeRequired === true,
     requiresAuth: route.requiresAuth === true,
   };
 }

@@ -33,6 +33,7 @@ function createServices(deps) {
     deleteSession: deps.deleteSession,
     getCurrentUserFromRequest: deps.getCurrentUserFromRequest,
     loginUser: deps.loginUser,
+    serializeCurrentUser: deps.serializeCurrentUser || deps.serializeUser,
     serializeUser: deps.serializeUser,
   });
   const users = createUsersService({

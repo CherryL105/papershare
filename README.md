@@ -90,6 +90,7 @@ npm install
 
 ```bash
 ELSEVIER_API_KEY=你的Elsevier API key
+PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD=首次启动时给管理员设置的初始密码
 PAPERSHARE_STORAGE_DIR=你希望的存储地址
 PAPERSHARE_ALLOWED_ORIGINS=https://你的前端域名
 PORT=你的端口
@@ -99,6 +100,8 @@ PORT=你的端口
 ，通过组织登录。
 
 - `PORT` 默认值为 `3000`，只有当 3000 端口被占用时才需要修改。
+
+- `PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD` 在首次启动且数据库中还没有内置管理员账号时必须填写。PaperShare 会用它创建 `admin` 管理员账号，并在首次登录后强制要求修改密码。
 
 - `PAPERSHARE_STORAGE_DIR` 如果不填，会默认在项目下创建 `.local/storage` 文件夹用于存储应用数据。可自行修改为其它本地文件夹。
     - 不要提交 `.local/`。
@@ -165,9 +168,9 @@ npm start
 
 也欢迎尝试探索papershare接入公网的额外操作。
 
-**(3)** 使用内置的管理员账号登录，并尽快在 "个人中心" - "账户设置" 修改密码。用户名也可修改。
+**(3)** 使用内置的管理员账号登录，并按提示立即修改初始密码。用户名也可修改。
 - 管理员账号用户名：admin
-- 管理员账号初始密码：1234
+- 管理员账号初始密码：首次启动前通过 `PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD` 显式配置
 
 **(4)** 管理员可以在 "个人中心" - "用户管理" 添加普通用户、转让管理员身份。只有管理员可以注册用户，普通用户无法自行注册。
 
@@ -197,6 +200,7 @@ docker run -d \
   --name papershare \
   -p 3000:3000 \
   -e PORT=3000 \
+  -e PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD="请改成你自己的管理员初始密码" \
   -e ELSEVIER_API_KEY="你的Elsevier_API_key" \
   -v "你希望的存储路径":/data \
   cherryl105/papershare:1.0.0
@@ -205,6 +209,7 @@ docker run -d \
 说明：
 - `-p 3000:3000`：把宿主机 3000 端口映射到容器 3000 端口
 - `-e PORT=3000`：容器内服务端口
+- `-e PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD=...`：首次启动时必填，用于创建内置 `admin` 账号；首次登录后系统会强制要求修改
 - `-e ELSEVIER_API_KEY=...`：可选；如果需要z抓取 Elsevier 正文和 Figure，建议填写
 - `-v "你希望的存储路径":/data`：
     - 如果希望把应用数据持久化到 Docker volume，重启或升级容器后数据不会丢失：`-v papershare_data:/data`
@@ -230,9 +235,9 @@ http://127.0.0.1:3000
 首次启动后，使用内置管理员账号登录：
 
 - 用户名：`admin`
-- 密码：`1234`
+- 密码：使用你在 `PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD` 中设置的值
 
-登录后建议尽快在“个人中心”中修改密码。
+登录后系统会先要求修改这条初始密码，完成后才能继续使用其它功能。
 
 ## 5. 常用命令
 
@@ -284,6 +289,7 @@ docker run -d \
   --name papershare \
   -p 3000:3000 \
   -e PORT=3000 \
+  -e PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD="请改成你自己的管理员初始密码" \
   -e ELSEVIER_API_KEY="你的Elsevier_API_key" \
   -v "你希望的存储路径":/data \
   cherryl105/papershare:"新版本号"

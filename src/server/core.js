@@ -94,7 +94,7 @@ const DEFAULT_USERS = [
     id: "bootstrap-admin",
     username: "admin",
     role: "admin",
-    password: "1234",
+    passwordEnvVar: "PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD",
     createdAt: "2026-04-13T00:00:00.000Z",
   },
 ];
@@ -221,7 +221,7 @@ async function loginUser(body) {
 
   return {
     token,
-    user: serializeUser(user),
+    user: serializeAuthenticatedUser(user),
   };
 }
 
@@ -257,6 +257,7 @@ async function changeUserPassword(userId, body) {
 
   SQLITE_STORE.users.update({
     ...user,
+    mustChangePassword: false,
     passwordHash: await hashPassword(nextPassword),
     updatedAt: new Date().toISOString(),
   });
@@ -304,6 +305,7 @@ async function createMemberUser(body) {
     id: createUserId(username),
     username,
     role: "member",
+    mustChangePassword: false,
     passwordHash: await hashPassword(password),
     createdAt,
     updatedAt: createdAt,
@@ -619,10 +621,12 @@ async function ensureDefaultUsers() {
     const existingUser = usersById.get(defaultUser.id) || usersByUsername.get(defaultUser.username);
 
     if (!existingUser) {
-      const { password, ...defaultUserRecord } = defaultUser;
+      const { passwordEnvVar, ...defaultUserRecord } = defaultUser;
+      const password = readRequiredBootstrapPassword(defaultUser);
 
       SQLITE_STORE.users.insert({
         ...defaultUserRecord,
+        mustChangePassword: true,
         passwordHash: await hashPassword(password),
       });
       continue;
@@ -1402,6 +1406,13 @@ function serializeUser(user) {
   };
 }
 
+function serializeAuthenticatedUser(user) {
+  return {
+    ...serializeUser(user),
+    mustChangePassword: Boolean(user?.mustChangePassword),
+  };
+}
+
 function normalizeUsername(value) {
   return String(value || "").trim();
 }
@@ -1445,6 +1456,33 @@ function validatePasswordForCreation(password) {
   if (password.length < 4) {
     throw new Error("初始密码至少需要 4 位");
   }
+}
+
+function readRequiredBootstrapPassword(defaultUser) {
+  const passwordEnvVar = String(defaultUser?.passwordEnvVar || "").trim();
+  const username = String(defaultUser?.username || "").trim() || defaultUser?.id || "bootstrap-user";
+
+  if (!passwordEnvVar) {
+    throw new Error(`Bootstrap 用户 ${username} 未配置 passwordEnvVar`);
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(process.env, passwordEnvVar)) {
+    throw new Error(
+      `Bootstrap 用户 ${username} 缺少初始密码环境变量 ${passwordEnvVar}，请在首次启动前显式配置`
+    );
+  }
+
+  const password = String(process.env[passwordEnvVar] ?? "");
+
+  try {
+    validatePasswordForCreation(password);
+  } catch (error) {
+    throw new Error(
+      `Bootstrap 用户 ${username} 的初始密码环境变量 ${passwordEnvVar} 无效：${error.message}`
+    );
+  }
+
+  return password;
 }
 
 function assertAdminUser(user) {
@@ -1566,6 +1604,7 @@ function createAppServices() {
     sendJson,
     serializeExpiredSessionCookie,
     serializeSessionCookie,
+    serializeCurrentUser: serializeAuthenticatedUser,
     serializeUser,
     servePrivateStorageAsset,
     serveStaticAsset,

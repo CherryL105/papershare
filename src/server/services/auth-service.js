@@ -3,7 +3,7 @@ function createAuthService(deps) {
     deleteSession: deps.deleteSession,
     getCurrentUserFromRequest: deps.getCurrentUserFromRequest,
     login: deps.loginUser,
-    serializeUser: deps.serializeUser,
+    serializeUser: deps.serializeCurrentUser || deps.serializeUser,
   };
 }
 

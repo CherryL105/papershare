@@ -49,7 +49,7 @@
 
 ## 四、其它细节
 
-- `DEFAULT_USERS` 仍把明文 `"1234"` 写死成默认管理员密码，虽然启动时会 hash 入库，但生产部署最好改成环境变量注入，并在首次登录强制改密。
+- [已完成] bootstrap 管理员密码已改为通过 `PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD` 注入，首次创建时若缺失该环境变量会直接启动失败；`users` 表和登录态也新增 `mustChangePassword`，强制 bootstrap 账号先改密再访问其它受保护 API。
 - `readRequestBody` 一类请求解析 helper 里仍有不少重复的 `String(...).trim()` / 错误消息模板，可继续抽取。
 - [已完成] `listByIds` / `papers.listByIdsWithStoredActivity()` 已改为按 900 条分块查询，避免触发 SQLite 999 参数限制。
 - React 入口（`CatalogPage` / `DetailPage`）目前只是 `dangerouslySetInnerHTML` 渲染原生 HTML 字符串（`raw-markup.jsx` 仅 3 行）。如果迁移没有路线图，可以反过来：放弃 React 壳，直接保留 vanilla + Vite 构建，省掉双轨。

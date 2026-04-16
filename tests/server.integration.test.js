@@ -12,6 +12,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 const require = createRequire(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SERVER_MODULE_CACHE_FRAGMENT = `${path.sep}src${path.sep}server${path.sep}`;
+const BOOTSTRAP_ADMIN_PASSWORD = "bootstrap-pass";
+const UPDATED_BOOTSTRAP_ADMIN_PASSWORD = "bootstrap-pass-updated";
 
 let builtClient = false;
 
@@ -194,7 +196,10 @@ async function loadCoreForStorage(storageDir, extraEnv = {}) {
   process.env.PAPERSHARE_STORAGE_DIR = storageDir;
   delete process.env.PORT;
   delete process.env.PAPERSHARE_ALLOWED_ORIGINS;
-  Object.entries(extraEnv).forEach(([key, value]) => {
+  Object.entries({
+    PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD: BOOTSTRAP_ADMIN_PASSWORD,
+    ...extraEnv,
+  }).forEach(([key, value]) => {
     if (value === undefined || value === null) {
       delete process.env[key];
       return;
@@ -375,14 +380,44 @@ function mockFetchSequence(...responses) {
   return fetchMock;
 }
 
-async function loginAs(agent, username = "admin", password = "1234") {
-  const response = await agent.post("/api/auth/login").send({
-    username,
-    password,
-  });
+async function loginAs(agent, username = "admin", password) {
+  const passwordCandidates =
+    password !== undefined
+      ? [password]
+      : username === "admin"
+        ? [UPDATED_BOOTSTRAP_ADMIN_PASSWORD, BOOTSTRAP_ADMIN_PASSWORD]
+        : [];
 
-  expect(response.status).toBe(200);
-  return response;
+  if (!passwordCandidates.length) {
+    throw new Error(`A password is required to log in as ${username}`);
+  }
+
+  let lastResponse = null;
+
+  for (const candidate of passwordCandidates) {
+    const response = await agent.post("/api/auth/login").send({
+      username,
+      password: candidate,
+    });
+    lastResponse = response;
+
+    if (response.status !== 200) {
+      continue;
+    }
+
+    if (response.body.user?.mustChangePassword) {
+      const changePasswordResponse = await agent.post("/api/me/password").send({
+        currentPassword: candidate,
+        nextPassword: UPDATED_BOOTSTRAP_ADMIN_PASSWORD,
+      });
+      expect(changePasswordResponse.status).toBe(200);
+    }
+
+    return response;
+  }
+
+  expect(lastResponse?.status).toBe(200);
+  return lastResponse;
 }
 
 async function createMemberUser(agent, username, password = "pass1234") {
@@ -502,12 +537,121 @@ beforeAll(() => {
 afterEach(() => {
   delete process.env.PAPERSHARE_STORAGE_DIR;
   delete process.env.PAPERSHARE_ALLOWED_ORIGINS;
+  delete process.env.PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD;
   delete process.env.ELSEVIER_API_KEY;
   delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
   vi.restoreAllMocks();
 });
 
 describe("SQLite migration and API flows", () => {
+  it("requires an explicit bootstrap password when creating the initial admin user", async () => {
+    const storageDir = await createStorageDir();
+
+    await expect(
+      loadCoreForStorage(storageDir, {
+        PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD: null,
+      })
+    ).rejects.toThrow(/PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD/);
+  });
+
+  it("marks bootstrap users for password change and blocks protected APIs until they update it", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    const db = new Database(path.join(storageDir, "papershare.sqlite"), { readonly: true });
+    const bootstrapUser = db
+      .prepare(
+        `
+          SELECT must_change_password AS mustChangePassword, json
+          FROM users
+          WHERE id = ?
+        `
+      )
+      .get("bootstrap-admin");
+
+    expect(bootstrapUser.mustChangePassword).toBe(1);
+    expect(JSON.parse(bootstrapUser.json).mustChangePassword).toBe(true);
+    db.close();
+
+    const loginResponse = await admin.post("/api/auth/login").send({
+      username: "admin",
+      password: BOOTSTRAP_ADMIN_PASSWORD,
+    });
+
+    expect(loginResponse.status).toBe(200);
+    expect(loginResponse.body.user.mustChangePassword).toBe(true);
+
+    const meBeforePasswordChangeResponse = await admin.get("/api/auth/me");
+    expect(meBeforePasswordChangeResponse.status).toBe(200);
+    expect(meBeforePasswordChangeResponse.body.user.mustChangePassword).toBe(true);
+
+    const blockedPapersResponse = await admin.get("/api/papers");
+    expect(blockedPapersResponse.status).toBe(403);
+    expect(blockedPapersResponse.body.code).toBe("PASSWORD_CHANGE_REQUIRED");
+
+    const blockedUsersResponse = await admin.get("/api/users");
+    expect(blockedUsersResponse.status).toBe(403);
+    expect(blockedUsersResponse.body.code).toBe("PASSWORD_CHANGE_REQUIRED");
+
+    const changePasswordResponse = await admin.post("/api/me/password").send({
+      currentPassword: BOOTSTRAP_ADMIN_PASSWORD,
+      nextPassword: "new-bootstrap-pass",
+    });
+    expect(changePasswordResponse.status).toBe(200);
+
+    const meAfterPasswordChangeResponse = await admin.get("/api/auth/me");
+    expect(meAfterPasswordChangeResponse.status).toBe(200);
+    expect(meAfterPasswordChangeResponse.body.user.mustChangePassword).toBe(false);
+
+    const papersResponse = await admin.get("/api/papers");
+    expect(papersResponse.status).toBe(200);
+
+    const memberUser = await createMemberUser(admin, "member-must-change", "member-pass");
+    expect(memberUser.mustChangePassword).toBeUndefined();
+
+    const member = request.agent(app);
+    const memberLoginResponse = await member.post("/api/auth/login").send({
+      username: "member-must-change",
+      password: "member-pass",
+    });
+    expect(memberLoginResponse.status).toBe(200);
+    expect(memberLoginResponse.body.user.mustChangePassword).toBe(false);
+
+    const dbAfterPasswordChange = new Database(path.join(storageDir, "papershare.sqlite"), {
+      readonly: true,
+    });
+    const updatedBootstrapUser = dbAfterPasswordChange
+      .prepare(
+        `
+          SELECT must_change_password AS mustChangePassword, json
+          FROM users
+          WHERE id = ?
+        `
+      )
+      .get("bootstrap-admin");
+    expect(updatedBootstrapUser.mustChangePassword).toBe(0);
+    expect(JSON.parse(updatedBootstrapUser.json).mustChangePassword).toBe(false);
+    dbAfterPasswordChange.close();
+  });
+
+  it("does not require the bootstrap password env once the bootstrap admin already exists", async () => {
+    const storageDir = await createStorageDir();
+
+    await loadCoreForStorage(storageDir);
+
+    const core = await loadCoreForStorage(storageDir, {
+      PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD: null,
+    });
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    const loginResponse = await loginAs(admin);
+
+    expect(loginResponse.status).toBe(200);
+  });
+
   it("migrates legacy JSON to sqlite, creates backups, and rehashes legacy passwords on login", async () => {
     const storageDir = await createStorageDir();
     const createdAt = "2026-04-15T00:00:00.000Z";
@@ -739,10 +883,7 @@ describe("SQLite migration and API flows", () => {
     const app = core.createHttpServer();
     const admin = request.agent(app);
 
-    const loginResponse = await admin.post("/api/auth/login").send({
-      username: "admin",
-      password: "1234",
-    });
+    const loginResponse = await loginAs(admin);
     expect(loginResponse.status).toBe(200);
 
     const db = new Database(path.join(storageDir, "papershare.sqlite"), { readonly: true });
@@ -791,10 +932,7 @@ describe("SQLite migration and API flows", () => {
     const app = core.createHttpServer();
     const admin = request.agent(app);
 
-    const loginResponse = await admin.post("/api/auth/login").send({
-      username: "admin",
-      password: "1234",
-    });
+    const loginResponse = await loginAs(admin);
     expect(loginResponse.status).toBe(200);
 
     const db = new Database(path.join(storageDir, "papershare.sqlite"), { readonly: true });
@@ -832,10 +970,8 @@ describe("SQLite migration and API flows", () => {
     const core = await loadCoreForStorage(storageDir);
     const app = core.createHttpServer();
 
-    const response = await request(app).post("/api/auth/login").send({
-      username: "admin",
-      password: "1234",
-    });
+    const responseAgent = request.agent(app);
+    const response = await loginAs(responseAgent);
 
     expect(response.status).toBe(200);
     expect(response.body.user.username).toBe("admin");
@@ -847,10 +983,7 @@ describe("SQLite migration and API flows", () => {
     const app = core.createHttpServer();
     const admin = request.agent(app);
 
-    const loginResponse = await admin.post("/api/auth/login").send({
-      username: "admin",
-      password: "1234",
-    });
+    const loginResponse = await loginAs(admin);
 
     expect(loginResponse.status).toBe(200);
 
@@ -1051,14 +1184,50 @@ describe("SQLite migration and API flows", () => {
     });
     const app = core.createHttpServer();
 
-    const loginResponse = await request(app)
+    const agent = request.agent(app);
+    let loginResponse = await agent
       .post("/api/auth/login")
       .set("Origin", "https://allowed.example")
       .set("X-Forwarded-Proto", "https")
       .send({
         username: "admin",
-        password: "1234",
+        password: UPDATED_BOOTSTRAP_ADMIN_PASSWORD,
       });
+
+    if (loginResponse.status !== 200) {
+      const bootstrapLoginResponse = await agent
+        .post("/api/auth/login")
+        .set("Origin", "https://allowed.example")
+        .set("X-Forwarded-Proto", "https")
+        .send({
+          username: "admin",
+          password: BOOTSTRAP_ADMIN_PASSWORD,
+        });
+
+      expect(bootstrapLoginResponse.status).toBe(200);
+      expect(bootstrapLoginResponse.body.user.mustChangePassword).toBe(true);
+
+      const passwordChangeResponse = await agent
+        .post("/api/me/password")
+        .set("Origin", "https://allowed.example")
+        .set("X-Forwarded-Proto", "https")
+        .set("Authorization", `Bearer ${bootstrapLoginResponse.body.token}`)
+        .send({
+          currentPassword: BOOTSTRAP_ADMIN_PASSWORD,
+          nextPassword: UPDATED_BOOTSTRAP_ADMIN_PASSWORD,
+        });
+
+      expect(passwordChangeResponse.status).toBe(200);
+
+      loginResponse = await agent
+        .post("/api/auth/login")
+        .set("Origin", "https://allowed.example")
+        .set("X-Forwarded-Proto", "https")
+        .send({
+          username: "admin",
+          password: UPDATED_BOOTSTRAP_ADMIN_PASSWORD,
+        });
+    }
 
     expect(loginResponse.status).toBe(200);
     expect(loginResponse.headers["access-control-allow-origin"]).toBe("https://allowed.example");
@@ -1092,10 +1261,7 @@ describe("SQLite migration and API flows", () => {
     const app = core.createHttpServer();
     const admin = request.agent(app);
 
-    await admin.post("/api/auth/login").send({
-      username: "admin",
-      password: "1234",
-    });
+    await loginAs(admin);
 
     const importResponse = await admin.post("/api/papers/import-html").send({
       rawHtml: createImportHtml("Multipart Paper", "Attachment body"),
@@ -1538,7 +1704,7 @@ describe("SQLite migration and API flows", () => {
     expect(newAdminCreateUserResponse.status).toBe(201);
 
     const oldAdminRelogin = request.agent(app);
-    await loginAs(oldAdminRelogin, "admin", "1234");
+    await loginAs(oldAdminRelogin);
 
     const oldAdminReloginMeResponse = await oldAdminRelogin.get("/api/auth/me");
     expect(oldAdminReloginMeResponse.status).toBe(200);

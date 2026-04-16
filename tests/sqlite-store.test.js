@@ -35,6 +35,7 @@ describe("sqlite-store repositories", () => {
       id: "user-1",
       username: "alice",
       role: "member",
+      mustChangePassword: true,
       passwordHash: "hash-1",
       createdAt: "2026-04-15T00:00:00.000Z",
       updatedAt: "2026-04-15T00:00:00.000Z",
@@ -113,7 +114,12 @@ describe("sqlite-store repositories", () => {
       attachments: [],
     });
 
-    expect(store.users.getByUsername("alice")?.id).toBe("user-1");
+    expect(store.users.getByUsername("alice")).toEqual(
+      expect.objectContaining({
+        id: "user-1",
+        mustChangePassword: true,
+      })
+    );
     expect(store.papers.getBySourceUrl("https://example.org/paper-1")?.id).toBe("paper-1");
     expect(store.annotations.listByPaperId("paper-1")).toHaveLength(3);
     expect(store.discussions.listByPaperId("paper-1")).toHaveLength(1);

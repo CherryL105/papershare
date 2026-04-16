@@ -1021,10 +1021,14 @@ function syncScrollPaneLayout() {
 function renderAuth() {
   const isAuthenticated = Boolean(state.currentUser);
   const isInitializing = state.isInitializing;
+  const isPasswordChangeRequired = requiresPasswordChange();
 
   authGate?.classList.toggle("is-hidden", isAuthenticated || isInitializing);
   appContent?.classList.toggle("is-hidden", !isAuthenticated || isInitializing);
-  viewSwitcher?.classList.toggle("is-hidden", !isAuthenticated || isInitializing);
+  viewSwitcher?.classList.toggle(
+    "is-hidden",
+    !isAuthenticated || isInitializing || isPasswordChangeRequired
+  );
   authControls?.classList.toggle("is-hidden", !isAuthenticated || isInitializing);
   if (currentUser) {
     currentUser.textContent = isAuthenticated ? `当前用户：${formatUserBadge(state.currentUser)}` : "";
@@ -1038,9 +1042,19 @@ function renderAuth() {
 }
 
 function renderViewSwitcher() {
+  const isPasswordChangeRequired = requiresPasswordChange();
   libraryViewButton?.classList.toggle("active", state.currentView === "library");
   profileViewButton?.classList.toggle("active", state.currentView === "profile");
   memberViewButton?.classList.toggle("active", state.currentView === "members");
+  if (libraryViewButton) {
+    libraryViewButton.disabled = isPasswordChangeRequired;
+  }
+  if (profileViewButton) {
+    profileViewButton.disabled = isPasswordChangeRequired;
+  }
+  if (memberViewButton) {
+    memberViewButton.disabled = isPasswordChangeRequired;
+  }
 }
 
 function renderViews() {
@@ -1049,6 +1063,10 @@ function renderViews() {
   passwordView?.classList.toggle("is-hidden", state.currentView !== "password");
   userManagementView?.classList.toggle("is-hidden", state.currentView !== "user-management");
   membersView?.classList.toggle("is-hidden", state.currentView !== "members");
+  backToLibraryButton?.classList.toggle(
+    "is-hidden",
+    state.currentView !== "library" || requiresPasswordChange()
+  );
 }
 
 function renderLibraryPanels() {
@@ -1109,7 +1127,9 @@ function renderHeader() {
       pageTitle.textContent = APP_TITLE;
     }
     if (pageSubtitle) {
-      pageSubtitle.innerHTML = "可在这里修改当前账号的用户名和登录密码，并可返回个人中心。";
+      pageSubtitle.innerHTML = requiresPasswordChange()
+        ? "首次登录后请先修改初始密码。修改完成前，其它功能将暂时锁定。"
+        : "可在这里修改当前账号的用户名和登录密码，并可返回个人中心。";
     }
     if (sourceLink) {
       sourceLink.href = "#";
@@ -1953,6 +1973,8 @@ function renderMemberProfilePanels() {
 }
 
 function renderAccountSettings() {
+  const isPasswordChangeRequired = requiresPasswordChange();
+
   if (usernameStatus) {
     usernameStatus.textContent = state.usernameStatus;
   }
@@ -1963,16 +1985,20 @@ function renderAccountSettings() {
 
   if (changeUsernameButton) {
     changeUsernameButton.disabled =
-      !state.serverReady || !state.currentUser || state.isUpdatingUsername;
+      !state.serverReady || !state.currentUser || state.isUpdatingUsername || isPasswordChangeRequired;
   }
 
   if (nextUsernameInput) {
-    nextUsernameInput.disabled = !state.serverReady || !state.currentUser || state.isUpdatingUsername;
+    nextUsernameInput.disabled =
+      !state.serverReady || !state.currentUser || state.isUpdatingUsername || isPasswordChangeRequired;
   }
 
   passwordStatus.textContent = state.passwordStatus;
   changePasswordButton.disabled =
     !state.serverReady || !state.currentUser || state.isChangingPassword;
+  if (passwordBackButton) {
+    passwordBackButton.disabled = isPasswordChangeRequired;
+  }
 }
 
 function renderUserManagement() {
@@ -2401,7 +2427,13 @@ function renderMemberProfileAnnotationList() {
 }
 
 async function initializeAuthenticatedApp() {
-  const status = await apiRequest("/api/status");
+  if (requiresPasswordChange()) {
+    enterPasswordChangeRequiredState();
+    render();
+    return;
+  }
+
+  await apiRequest("/api/status");
   state.databaseStatus = `服务已连接`;
   state.paperFormStatus = "等待抓取";
   state.usernameStatus = "请输入新的用户名";
@@ -2524,10 +2556,32 @@ function resetAppForLoggedOutState() {
   writePaperIdToHash("");
 }
 
+function enterPasswordChangeRequiredState(message = "首次登录后请先修改初始密码") {
+  resetPaperSelection();
+  state.currentView = "password";
+  state.libraryPanel = "reader";
+  state.profilePanel = "papers";
+  state.memberProfilePanel = "papers";
+  state.papers = [];
+  state.myUploadedPapers = [];
+  state.myAnnotations = [];
+  state.receivedReplies = [];
+  state.allUsers = [];
+  state.groupMembers = [];
+  state.selectedMemberId = null;
+  state.selectedMemberProfile = null;
+  state.paperFormStatus = "修改密码后可抓取文献";
+  state.databaseStatus = "已登录，需先修改初始密码";
+  state.usernameStatus = "首次改密完成前，用户名暂时不可修改";
+  state.passwordStatus = message;
+  state.userManagementStatus = "首次改密完成前，用户管理功能暂不可用";
+}
+
 async function switchView(viewName) {
   if (
     !state.currentUser ||
     state.currentView === viewName ||
+    (requiresPasswordChange() && viewName !== "password") ||
     (viewName === "user-management" && !isCurrentUserAdmin())
   ) {
     return;
@@ -2544,7 +2598,7 @@ async function switchView(viewName) {
 }
 
 function switchLibraryPanel(panelName) {
-  if (!state.currentUser) {
+  if (!state.currentUser || requiresPasswordChange()) {
     return;
   }
 
@@ -2566,7 +2620,7 @@ function switchLibraryPanel(panelName) {
 }
 
 function handlePasswordBackClick() {
-  if (!state.currentUser) {
+  if (!state.currentUser || requiresPasswordChange()) {
     return;
   }
 
@@ -2927,6 +2981,7 @@ async function handlePasswordSubmit(event) {
   renderAccountSettings();
 
   try {
+    const wasPasswordChangeRequired = requiresPasswordChange();
     await apiRequest("/api/me/password", {
       method: "POST",
       body: JSON.stringify({
@@ -2934,7 +2989,20 @@ async function handlePasswordSubmit(event) {
         nextPassword,
       }),
     });
+    const authState = await apiRequest("/api/auth/me");
     passwordForm.reset();
+
+    if (authState.authenticated && authState.user) {
+      state.currentUser = authState.user;
+      storeCurrentUser(authState.user);
+      state.loginStatus = `已登录为 ${authState.user.username}`;
+    }
+
+    if (wasPasswordChangeRequired && !requiresPasswordChange()) {
+      state.currentView = IS_DETAIL_PAGE ? "library" : "profile";
+    }
+
+    await initializeAuthenticatedApp();
     state.passwordStatus = "密码更新成功";
   } catch (error) {
     console.error("Failed to change password.", error);
@@ -2948,7 +3016,7 @@ async function handlePasswordSubmit(event) {
 async function handleUsernameSubmit(event) {
   event.preventDefault();
 
-  if (!state.currentUser || state.isUpdatingUsername) {
+  if (!state.currentUser || state.isUpdatingUsername || requiresPasswordChange()) {
     return;
   }
 
@@ -4803,6 +4871,10 @@ function canEditDiscussion(discussion) {
 
 function isCurrentUserAdmin() {
   return isAdminUser(state.currentUser);
+}
+
+function requiresPasswordChange(user = state.currentUser) {
+  return Boolean(user?.mustChangePassword);
 }
 
 function formatUserBadge(user) {
@@ -6915,6 +6987,16 @@ async function apiRequest(path, options = {}) {
     state.currentUser = null;
     state.loginStatus = data.error || "登录已失效，请重新登录";
     resetAppForLoggedOutState();
+    render();
+  }
+
+  if (response.status === 403 && data.code === "PASSWORD_CHANGE_REQUIRED") {
+    state.currentUser = {
+      ...(state.currentUser || {}),
+      mustChangePassword: true,
+    };
+    storeCurrentUser(state.currentUser);
+    enterPasswordChangeRequiredState(data.error || "首次登录后请先修改初始密码");
     render();
   }
 
