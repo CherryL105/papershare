@@ -1,10 +1,6 @@
 function createAssetsService(deps) {
-  async function fetchElsevierObject(eid, mimeType) {
-    return deps.fetchElsevierObjectBinary(eid, deps.normalizeMimeType(mimeType || ""));
-  }
-
   return {
-    fetchElsevierObject,
+    fetchElsevierObject: deps.fetchElsevierObject,
     servePrivateStorageAsset: deps.servePrivateStorageAsset,
     serveStaticAsset: deps.serveStaticAsset,
   };

@@ -1,9 +1,14 @@
 import path from "node:path";
 import { createRequire } from "node:module";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 const { createServices } = require("../src/server/services");
+
+afterEach(() => {
+  delete process.env.ELSEVIER_API_KEY;
+  vi.restoreAllMocks();
+});
 
 function createDashboardFixture() {
   const paper = {
@@ -19,6 +24,7 @@ function createDashboardFixture() {
     latestSpeakerUsername: "member1",
     created_by_user_id: "user-1",
     created_by_username: "admin",
+    snapshotPath: "html/paper-1.html",
   };
   const ownedAnnotation = {
     id: "annotation-owned",
@@ -135,17 +141,38 @@ function createDeps(overrides = {}) {
   };
   const store = {
     getDatabase: vi.fn(() => database),
+    runInTransaction: vi.fn((action) =>
+      action({
+        annotations: store.annotations,
+        discussions: store.discussions,
+        papers: store.papers,
+        sessions: store.sessions,
+        users: store.users,
+      })
+    ),
     annotations: {
+      insert: vi.fn(),
       listByIds: vi.fn(() => [dashboardFixture.ownedAnnotation, dashboardFixture.replyAnnotation]),
+      listByPaperId: vi.fn(() => [dashboardFixture.ownedAnnotation, dashboardFixture.replyAnnotation]),
       listByUserId: vi.fn(() => [dashboardFixture.ownedAnnotation]),
     },
     discussions: {
+      insert: vi.fn(),
       listByIds: vi.fn(() => [dashboardFixture.ownedDiscussion, dashboardFixture.replyDiscussion]),
       listByUserId: vi.fn(() => [dashboardFixture.ownedDiscussion]),
+      update: vi.fn((discussion) => discussion),
     },
     papers: {
+      getById: vi.fn((paperId) => (paperId === "paper-1" ? dashboardFixture.paper : null)),
+      getBySourceUrl: vi.fn(() => null),
+      insert: vi.fn((paper) => paper),
       listByIds: vi.fn(() => [dashboardFixture.paper]),
       listByUserId: vi.fn(() => [dashboardFixture.paper]),
+      listWithActivity: vi.fn(() => [dashboardFixture.paper]),
+      refreshActivitiesByIds: vi.fn(),
+    },
+    sessions: {
+      deleteByToken: vi.fn(),
     },
     users: {
       getById: vi.fn((userId) =>
@@ -177,7 +204,11 @@ function createDeps(overrides = {}) {
 
   return {
     ANNOTATIONS_FILE: "/tmp/annotations.json",
+    ATTACHMENTS_DIR: "/tmp/storage/attachments",
     DISCUSSIONS_FILE: "/tmp/discussions.json",
+    MAX_ATTACHMENT_BYTES: 10 * 1024 * 1024,
+    MAX_ATTACHMENT_COUNT: 6,
+    MAX_TOTAL_ATTACHMENT_BYTES: 20 * 1024 * 1024,
     PAPERS_FILE: "/tmp/papers.json",
     PORT: 3000,
     STORAGE_DIR: "/tmp/storage",
@@ -186,55 +217,51 @@ function createDeps(overrides = {}) {
     assertAdminUser: vi.fn(),
     changeUserPassword: vi.fn().mockResolvedValue(undefined),
     changeUsername: vi.fn().mockResolvedValue({ id: "user-1", username: "renamed" }),
-    clearAnnotationsByPaperId: vi.fn().mockResolvedValue(3),
+    createAnnotationId: vi.fn(() => "annotation-created"),
+    createAttachmentId: vi.fn(() => "attachment-created"),
+    createDiscussionId: vi.fn(() => "discussion-created"),
     createMemberUser: vi.fn().mockResolvedValue({ id: "user-2", username: "member" }),
-    deleteAnnotationById: vi.fn().mockResolvedValue({ ok: true }),
-    deleteDiscussionById: vi.fn().mockResolvedValue({ ok: true }),
-    deletePaperById: vi.fn().mockResolvedValue({ ok: true }),
+    createPaperId: vi.fn(() => "paper-created"),
     deleteSession: vi.fn().mockResolvedValue(undefined),
     deleteUserById: vi.fn().mockResolvedValue({ deletedUserId: "user-2" }),
     enforceSnapshotArticleImagePolicy: vi.fn((html) => `${html}\n<!-- sanitized -->`),
     ensureStorageFiles: vi.fn().mockResolvedValue(undefined),
-    fetchAndStorePaper: vi.fn().mockResolvedValue({ id: "paper-1" }),
-    fetchElsevierObjectBinary: vi.fn().mockResolvedValue({
-      contentType: "text/plain",
-      content: Buffer.from("asset"),
-    }),
     fs: {
+      mkdir: vi.fn().mockResolvedValue(undefined),
       readFile: vi.fn().mockResolvedValue("<article>snapshot</article>"),
+      unlink: vi.fn().mockResolvedValue(undefined),
+      writeFile: vi.fn().mockResolvedValue(undefined),
     },
-    getAnnotationsByPaperId: vi.fn().mockResolvedValue([{ id: "annotation-1" }]),
-    getAnnotationsByUserId: vi.fn().mockResolvedValue([{ id: "annotation-2" }]),
     getCurrentUserFromRequest: vi.fn().mockResolvedValue({ id: "user-1" }),
-    getDiscussionsByPaperId: vi.fn().mockResolvedValue([{ id: "discussion-1" }]),
     getJsonCollectionLength: vi
       .fn()
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(2)
       .mockResolvedValueOnce(3),
-    getPaperById: vi.fn().mockResolvedValue({
-      id: "paper-1",
-      snapshotPath: "html/paper-1.html",
-      sourceUrl: "https://example.org/paper-1",
-    }),
     getPublicUserProfile: vi.fn().mockResolvedValue({ id: "user-1", username: "admin" }),
     getSessionTokenFromRequest: vi.fn().mockReturnValue("session-1"),
     getUserDashboard: vi.fn().mockResolvedValue({ uploadedPapers: [] }),
-    importPaperFromHtml: vi.fn().mockResolvedValue({ id: "paper-2" }),
-    listPapersWithActivity: vi.fn().mockResolvedValue([{ id: "paper-1", speechCount: 2 }]),
     listUsersWithStats: vi.fn().mockResolvedValue([{ id: "user-1", username: "admin" }]),
     loginUser: vi.fn().mockResolvedValue({ token: "session-1", user: { id: "user-1" } }),
     normalizeAnnotationRecord: vi.fn((value) => value),
+    normalizeAttachmentRecord: vi.fn((value) => ({
+      ...value,
+      storage_path: String(value?.storage_path || "").trim(),
+      url: value?.storage_path ? `/api/storage/${value.storage_path}` : value?.url || "",
+    })),
+    normalizeAttachmentRecords: vi.fn((attachments) => (Array.isArray(attachments) ? attachments : [])),
     normalizeDiscussionRecord: vi.fn((value) => value),
-    normalizeMimeType: vi.fn((value) => String(value).trim().toLowerCase()),
     normalizePaperRecord: vi.fn((value) => value),
     path,
+    formatLimitInMb: vi.fn((value) => Math.round((value / (1024 * 1024)) * 10) / 10),
     readRequestJson: vi.fn().mockResolvedValue({ sourceUrl: "https://example.org" }),
     readSpeechMutationBody: vi.fn().mockResolvedValue({ note: "hello" }),
-    saveAnnotation: vi.fn().mockResolvedValue({ id: "annotation-1" }),
-    saveAnnotationReply: vi.fn().mockResolvedValue({ id: "annotation-2" }),
-    saveDiscussion: vi.fn().mockResolvedValue({ id: "discussion-1" }),
-    saveDiscussionReply: vi.fn().mockResolvedValue({ id: "discussion-2" }),
+    resolveAttachmentDescriptor: vi.fn((originalName, mimeType) => ({
+      category: String(mimeType || "").includes("image/") ? "image" : "table",
+      extension: path.extname(originalName) || ".csv",
+      mimeType: String(mimeType || "").trim().toLowerCase() || "text/csv",
+    })),
+    resolveStorageAbsolutePath: vi.fn((storagePath) => path.join("/tmp/storage", storagePath)),
     sendJson: vi.fn(),
     serializeExpiredSessionCookie: vi.fn().mockReturnValue("expired-cookie"),
     serializeSessionCookie: vi.fn().mockReturnValue("session-cookie"),
@@ -253,6 +280,23 @@ describe("services container", () => {
   it("groups domain services and preserves delegated behavior", async () => {
     const deps = createDeps();
     const services = createServices(deps);
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          '<!doctype html><html><head><title>Fetched Paper</title><meta name="citation_title" content="Fetched Paper" /></head><body><article><p>Body</p></article></body></html>',
+          {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(Buffer.from("asset"), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        })
+      );
 
     expect(services.runtime.PORT).toBe(3000);
     expect(await services.auth.login({ username: "admin" })).toEqual({
@@ -268,16 +312,30 @@ describe("services container", () => {
     expect(dashboard.myAnnotations).toHaveLength(2);
     expect(dashboard.repliesToMyAnnotations).toHaveLength(2);
     expect(dashboard.repliesToMyAnnotations[0].id).toBe("discussion-reply");
-    expect(await services.papers.fetchAndStore("https://example.org/paper-1", { id: "user-1" })).toEqual({
-      id: "paper-1",
-    });
+    expect(
+      await services.papers.fetchAndStore("https://example.org/paper-1", {
+        id: "user-1",
+        username: "admin",
+      })
+    ).toEqual(
+      expect.objectContaining({
+        id: "paper-created",
+        sourceUrl: "https://example.org/paper-1",
+        title: "Fetched Paper",
+      })
+    );
     expect(await services.speech.getAnnotationsByUserId({ id: "user-1" })).toEqual([
       expect.objectContaining({ id: "discussion-owned" }),
       expect.objectContaining({ id: "annotation-owned" }),
     ]);
-    expect(await services.speech.saveDiscussion("paper-1", { note: "hello" }, { id: "user-1" })).toEqual({
-      id: "discussion-1",
-    });
+    expect(
+      await services.speech.saveDiscussion("paper-1", { note: "hello" }, { id: "user-1", username: "admin" })
+    ).toEqual(
+      expect.objectContaining({
+        id: "discussion-created",
+        note: "hello",
+      })
+    );
     const profile = await services.dashboard.getPublicUserProfile("user-1");
     expect(profile.user).toEqual(expect.objectContaining({ id: "user-1", username: "admin", safe: true }));
     expect(profile.uploadedPapers).toEqual([expect.objectContaining({ id: "paper-1" })]);
@@ -310,15 +368,25 @@ describe("services container", () => {
       discussionCount: 3,
     });
 
-    const asset = await services.assets.fetchElsevierObject("EID-1", " TEXT/PLAIN ");
-    expect(asset.contentType).toBe("text/plain");
+    process.env.ELSEVIER_API_KEY = "test-api-key";
+    const asset = await services.assets.fetchElsevierObject("EID-1", " image/png ");
+    expect(asset.contentType).toBe("image/png");
     expect(asset.content.toString("utf8")).toBe("asset");
 
     expect(deps.loginUser).toHaveBeenCalledWith({ username: "admin" });
     expect(deps.changeUsername).toHaveBeenCalledWith("user-1", { username: "renamed" });
-    expect(deps.fetchAndStorePaper).toHaveBeenCalledWith("https://example.org/paper-1", { id: "user-1" });
-    expect(deps.getAnnotationsByUserId).not.toHaveBeenCalled();
-    expect(deps.saveDiscussion).toHaveBeenCalledWith("paper-1", { note: "hello" }, { id: "user-1" });
+    expect(deps.store.papers.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "paper-created",
+        title: "Fetched Paper",
+      })
+    );
+    expect(deps.store.discussions.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "discussion-created",
+        note: "hello",
+      })
+    );
     expect(deps.fs.readFile).toHaveBeenCalledWith("/tmp/storage/html/paper-1.html", "utf8");
     expect(deps.enforceSnapshotArticleImagePolicy).toHaveBeenCalledWith(
       "<article>snapshot</article>",
@@ -327,17 +395,16 @@ describe("services container", () => {
     expect(deps.getJsonCollectionLength).toHaveBeenNthCalledWith(1, "/tmp/papers.json");
     expect(deps.getJsonCollectionLength).toHaveBeenNthCalledWith(2, "/tmp/annotations.json");
     expect(deps.getJsonCollectionLength).toHaveBeenNthCalledWith(3, "/tmp/discussions.json");
-    expect(deps.normalizeMimeType).toHaveBeenCalledWith(" TEXT/PLAIN ");
     expect(deps.store.papers.listByUserId).toHaveBeenCalledWith("user-1");
     expect(deps.store.annotations.listByUserId).toHaveBeenCalledWith("user-1");
     expect(deps.store.discussions.listByUserId).toHaveBeenCalledWith("user-1");
-    expect(deps.fetchElsevierObjectBinary).toHaveBeenCalledWith("EID-1", "text/plain");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://example.org/paper-1");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/content/object/eid/EID-1");
   });
 
   it("raises stable 404s when a paper snapshot cannot be read", async () => {
-    const missingPaperDeps = createDeps({
-      getPaperById: vi.fn().mockResolvedValue(null),
-    });
+    const missingPaperDeps = createDeps();
+    missingPaperDeps.store.papers.getById = vi.fn(() => null);
     const missingPaperServices = createServices(missingPaperDeps);
 
     await expect(missingPaperServices.papers.readSnapshotContent("paper-missing")).rejects.toMatchObject({
@@ -345,13 +412,12 @@ describe("services container", () => {
       statusCode: 404,
     });
 
-    const missingSnapshotDeps = createDeps({
-      getPaperById: vi.fn().mockResolvedValue({
+    const missingSnapshotDeps = createDeps();
+    missingSnapshotDeps.store.papers.getById = vi.fn(() => ({
         id: "paper-2",
         snapshotPath: "",
         sourceUrl: "https://example.org/paper-2",
-      }),
-    });
+      }));
     const missingSnapshotServices = createServices(missingSnapshotDeps);
 
     await expect(missingSnapshotServices.papers.readSnapshotContent("paper-2")).rejects.toMatchObject({

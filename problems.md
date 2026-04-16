@@ -3,12 +3,12 @@
 ## 一、架构与代码组织（最大问题）
 
 ### 1. [部分完成] `src/server/core.js` 体量失控
-- `core.js` 目前仍有 **4246 行**，Elsevier XML 解析、HTML 抓取/正则解析、附件管理、用户/会话/权限等大量业务实现仍然集中在单文件里，这个问题还没有彻底解决。
-- [已完成] 已新增 `src/server/services/` 服务组合层，按 `http / assets / system / auth / users / papers / speech / dashboard` 8 个命名空间拆出服务工厂；`router.js` 和 `routes/api.js` 已改为消费分组服务，而不是直接依赖扁平的 `core.*`。
-- [已完成] `createRouteServices()` 已被 `createAppServices()` / `createServices()` 取代，`core.js` 至少退回到了“兼容门面 + 服务装配入口”的角色，路由层不再直接拿 `fs`、`path`、`STORAGE_DIR`、`PAPERS_FILE` 之类底层依赖。
-- [已完成] 已补 `tests/services.test.js`，覆盖服务容器装配、`papers.readSnapshotContent()`、`system.getCollectionStats()`、`assets.fetchElsevierObject()` 等高层接口，给后续继续迁出 `core.js` 内部实现提供护栏。
-- [已完成] `dashboard/users/profile` 聚合逻辑已从 `core.js` 迁到 `src/server/services/dashboard-service.js`，`speech.getAnnotationsByUserId()` 也直接复用 dashboard service，不再通过 `core.js` 中转。
-- 下一步仍建议继续把 `papers/import`、附件处理、部分 `speech` 变更逻辑继续从 `core.js` 迁出，最终把该文件收缩为真正的薄门面。
+- `core.js` 已从 **4246 行** 收缩到 **1918 行**。本轮已经完成两阶段拆分：`speech + attachments` 迁入 `src/server/services/speech-service.js`（764 行），`papers/import + Elsevier` 迁入 `src/server/services/papers-service.js`（1727 行）。
+- [已完成] `speech-service.js` 现在直接拥有批注/讨论的新增、回复、编辑、删除、批量清空、按论文读取、按用户聚合，以及附件草稿解析、保留/新增合并、文件写入、失败回滚、删除清理。
+- [已完成] `papers-service.js` 现在直接拥有文献抓取、HTML 导入、快照存储/读取、文献删除、Elsevier Full Text API 抓取、XML 转 HTML、对象图片代理。
+- [已完成] `createServices()` 已从“注入高层业务函数”切换为“注入 store / fs / path / ID 生成器 / normalizer / 配置等底层能力，由 service 自己实现流程”。`assets.fetchElsevierObject()` 也改为复用 papers domain，而不是继续从 `core.js` 透传。
+- [已完成] `tests/services.test.js` 已从透传型测试升级为真实 service 行为测试，覆盖 snapshot 读取、真实 `fetch()` 抓取、discussion 写入、Elsevier 资源代理等关键路径；`npm test` 当前全绿。
+- 剩余在 `core.js` 的主要职责已经收敛为：启动与环境装配、auth/users、静态资源与私有存储服务、record normalizer、少量共享 helper。后续如果还要继续瘦身，优先考虑再拆 `auth/users` 或 `static/storage`，但它们已经不是当前最大的结构瓶颈。
 
 ### 2. `src/client/legacy/app-runtime.js` 7072 行单文件
 - 299 个 function，跟 React 入口（`CatalogPage.jsx`、`DetailPage.jsx`，每个 16 行）并存。看起来正在做 legacy → React 迁移，但 legacy runtime 仍然承担全部 UI 逻辑，新 React 代码几乎是空壳。
@@ -22,57 +22,41 @@
 - `speech.getAnnotationsByUserId()` 不再依赖旧的 `core.js` dashboard 代理，而是直接复用 dashboard service。
 - 如果 dashboard 后续成为热点 API，下一步再考虑按 `userId + 内容更新时间` 做结果缓存。
 
-### 4. [已完成] `listWithActivity` SQL (sqlite-store.js L356-L416) 是 N 个相关子查询
-- 每行 papers 都触发 4 个独立的 `SELECT … UNION ALL` 子查询（speech_count、latest_speech_at、latest_speaker_username、ORDER BY 又一次）。在 papers 多时是 O(P · A+D)。
-- 优化方案：用 CTE 一次性聚合：
-  ```sql
-  WITH speech AS (
-    SELECT paper_id, created_at, created_by_username FROM annotations
-    UNION ALL
-    SELECT paper_id, created_at, created_by_username FROM discussions
-  ),
-  agg AS (
-    SELECT paper_id, COUNT(*) AS c, MAX(created_at) AS latest_at
-    FROM speech GROUP BY paper_id
-  )
-  SELECT p.json, agg.c, agg.latest_at, ... FROM papers p LEFT JOIN agg ON ...
-  ```
-- 或者直接用列表里已经存在的 `latest_speech_at / latest_speaker_username / speech_count` 冗余字段——repository 里 update 语句（L335-L350）已经会写它们，那 `listWithActivity` 完全可以直接读列，不再聚合。**这是最大收益项。**
+### 4. [已完成] `listWithActivity` SQL 使用冗余列替代相关子查询
+- 首页 papers 列表不再对 annotations/discussions 做 N 个相关子查询聚合，而是直接读取 papers 表上已维护的 `speech_count / latest_speech_at / latest_speaker_username`。
+- `sqlite-store.js` 已在写路径和 backfill 路径中维护这些冗余字段，首页查询成本已经显著下降。
 
-### 5. [已完成] JSON 列模式带来的全表反序列化
-- 所有 repository 的 `listAll()` 都 `JSON.parse(row.json)`，N 行 → N 次 parse，热路径上代价高。
-- core.js 里 `readAnnotations` (L2813) / `readDiscussions` (L2819) / `readPapers` (L3143) 又对结果 `cloneJsonValue` 一次（`JSON.parse(JSON.stringify(...))`），相当于每条记录解析两遍 + 序列化一遍。
-- `cloneJsonValue` 是为了防御 normalize 函数修改入参，但 parse 出来的对象本来就是私有副本——这层 clone 完全可以删除。
-- 长期可考虑只把热查询字段提到列上，用 `json_extract` 替代 `SELECT json` 全量回填。
+### 5. [已完成] JSON 列模式带来的额外克隆/反序列化
+- repository 仍然会做 `JSON.parse(row.json)`，但此前 `core.js` 上层多余的 `cloneJsonValue` 已删除，不再出现“parse 一次再 stringify/parse 一次”的重复开销。
+- 长期如果 papers / dashboard 热查询继续增长，可以再考虑把更多热字段提到列上，并在必要时使用 `json_extract`。
 
 ### 6. [已完成] 密码 scrypt 同步阻塞事件循环
-- `hashPassword` (L4076) / `verifyPassword` (L4082) 用的是 `crypto.scryptSync`，在登录/创建用户路径上会阻塞整个 HTTP server。改为 `promisify(crypto.scrypt)` 即可异步。
+- `hashPassword()` / `verifyPassword()` 已改为异步 `scrypt`，登录、创建用户、改密路径不再用 `scryptSync` 阻塞整个 HTTP server。
 
 ## 三、正确性 / 潜在 bug
 
 ### 7. [已完成] 路由初始化竞态
-- `routeRequest()` (L161-L167) 用 `if (!appRouter) appRouter = createRouter(...)` 实现 lazy init。`createRouter` 是同步的，所以单事件循环 tick 下没有真竞态，但建议在 `start()` 里就构建好，避免误改成 async 后出问题。
+- 路由已在 `createHttpServer()` 中显式初始化，不再依赖请求时 lazy init。
 
 ### 8. [已完成] `createCountMapFromRows` 与 `getOwnedRecordCountForUser` 双映射
 - 启动流程已增加 ownership backfill：在 `ensureDefaultUsers()` 之后扫描 `papers / annotations / discussions` 中 `created_by_user_id=''` 且用户名可匹配现存用户的历史记录，并回填到列值与 `json` payload。
-- `/api/users` 统计和 dashboard 归属判断现在只按 `created_by_user_id` 聚合，不再维护"按 id"和"按 username"两套 count map。
+- `/api/users` 统计和 dashboard 归属判断现在只按 `created_by_user_id` 聚合，不再维护“按 id”和“按 username”两套 count map。
 - 无法匹配现存用户的 orphan 记录会保留原样并输出 warning，但不会再进入新的 userId-only 统计路径。
 
-### 9. `serveStaticAsset` (L2863-L2921)
-- `path.normalize(...).replace(/^(\.\.[/\\])+/, "")` 之后还有 `startsWith(CLIENT_DIST_DIR)` 校验，OK；但每次请求都做 `fs.stat` + `fs.readFile`（小文件直接整块读到内存），没有内存缓存。dist 静态资源可以用启动时一次性扫描 + 弱缓存，或者交给反向代理。
+### 9. [部分完成] `serveStaticAsset` 仍是磁盘直读
+- [已完成] 静态资源已经补上 `Cache-Control`、`ETag`、`Last-Modified` 和 `304` 协商缓存，安全性上也保留了 `CLIENT_DIST_DIR` 边界校验。
+- 仍未完成的是内存级缓存：当前每次请求还是 `fs.stat`，`GET` 还会继续 `fs.readFile`。如果部署场景以单机 Node 直出为主，可以考虑启动时索引 + 热文件弱缓存；如果前面有 Nginx/Caddy/CDN，这项优先级可以后移。
 
 ## 四、其它细节
 
-- `core.js` L31-L32 缩进用了 tab 而非两空格，与文件其它部分不一致。
-- `DEFAULT_USERS` (L111-L119) 把明文 `"1234"` 写死成默认管理员密码，初始化时就 hash 写库——如果是生产部署里的 bootstrap，建议通过环境变量传入并在首次登录强制改密。
-- `readRequestBody` (L2937) 之类的工具方法重复了很多 `String(...).trim()` 模式，可抽取。
+- `DEFAULT_USERS` 仍把明文 `"1234"` 写死成默认管理员密码，虽然启动时会 hash 入库，但生产部署最好改成环境变量注入，并在首次登录强制改密。
+- `readRequestBody` 一类请求解析 helper 里仍有不少重复的 `String(...).trim()` / 错误消息模板，可继续抽取。
 - [已完成] `listByIds` / `papers.listByIdsWithStoredActivity()` 已改为按 900 条分块查询，避免触发 SQLite 999 参数限制。
 - React 入口（`CatalogPage` / `DetailPage`）目前只是 `dangerouslySetInnerHTML` 渲染原生 HTML 字符串（`raw-markup.jsx` 仅 3 行）。如果迁移没有路线图，可以反过来：放弃 React 壳，直接保留 vanilla + Vite 构建，省掉双轨。
 
 ## 优先级建议（按 ROI）
 
-1. [已完成] **直接读 papers 表上已存在的 `latest_speech_at` / `speech_count` 冗余列**，移除 `listWithActivity` 的子查询 —— 一次性大幅降低首页查询成本。
-2. [已完成] **删除 `cloneJsonValue` 多余克隆**，scrypt 改异步。
-3. [部分完成] **继续拆分 `core.js`** —— 服务容器、dashboard 聚合和用户统计已迁出，下一步应继续把 import / attachments / 其余 speech 变更逻辑迁出。
-4. **dashboard 查询缓存**。
-5. 决定 legacy runtime / React 迁移走向。
+1. **dashboard 查询缓存**。
+2. **默认管理员密码改为环境变量 bootstrap**，避免生产部署保留固定初始密码。
+3. **决定 legacy runtime / React 迁移走向**，这是当前前端最大的结构债。
+4. **如果还想继续压缩服务端复杂度，再拆 `auth/users` 或 `static/storage`**，但这已经是“锦上添花”而不是当前主瓶颈。

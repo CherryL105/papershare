@@ -20,12 +20,6 @@ function createServices(deps) {
     serializeExpiredSessionCookie: deps.serializeExpiredSessionCookie,
     serializeSessionCookie: deps.serializeSessionCookie,
   });
-  const assets = createAssetsService({
-    fetchElsevierObjectBinary: deps.fetchElsevierObjectBinary,
-    normalizeMimeType: deps.normalizeMimeType,
-    servePrivateStorageAsset: deps.servePrivateStorageAsset,
-    serveStaticAsset: deps.serveStaticAsset,
-  });
   const system = createSystemService({
     collectionFiles: {
       annotations: deps.ANNOTATIONS_FILE,
@@ -49,18 +43,6 @@ function createServices(deps) {
     deleteUserById: deps.deleteUserById,
     transferAdminRole: deps.transferAdminRole,
   });
-  const papers = createPapersService({
-    HttpError: deps.HttpError,
-    deletePaperById: deps.deletePaperById,
-    enforceSnapshotArticleImagePolicy: deps.enforceSnapshotArticleImagePolicy,
-    fetchAndStorePaper: deps.fetchAndStorePaper,
-    fs: deps.fs,
-    getPaperById: deps.getPaperById,
-    importPaperFromHtml: deps.importPaperFromHtml,
-    listPapersWithActivity: deps.listPapersWithActivity,
-    path: deps.path,
-    storageDir: deps.STORAGE_DIR,
-  });
   const dashboard = createDashboardService({
     HttpError: deps.HttpError,
     normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
@@ -70,20 +52,47 @@ function createServices(deps) {
     store: deps.store,
   });
   const speech = createSpeechService({
-    clearAnnotationsByPaperId: deps.clearAnnotationsByPaperId,
+    attachmentsDir: deps.ATTACHMENTS_DIR,
+    createAnnotationId: deps.createAnnotationId,
+    createAttachmentId: deps.createAttachmentId,
+    createDiscussionId: deps.createDiscussionId,
     dashboardService: dashboard,
-    deleteAnnotationById: deps.deleteAnnotationById,
-    deleteDiscussionById: deps.deleteDiscussionById,
-    getAnnotationsByPaperId: deps.getAnnotationsByPaperId,
-    getAnnotationsByUserId: deps.getAnnotationsByUserId,
-    getDiscussionsByPaperId: deps.getDiscussionsByPaperId,
+    formatLimitInMb: deps.formatLimitInMb,
+    fs: deps.fs,
+    HttpError: deps.HttpError,
+    MAX_ATTACHMENT_BYTES: deps.MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_COUNT: deps.MAX_ATTACHMENT_COUNT,
+    MAX_TOTAL_ATTACHMENT_BYTES: deps.MAX_TOTAL_ATTACHMENT_BYTES,
+    maxAttachmentBytes: deps.MAX_ATTACHMENT_BYTES,
+    maxAttachmentCount: deps.MAX_ATTACHMENT_COUNT,
+    maxTotalAttachmentBytes: deps.MAX_TOTAL_ATTACHMENT_BYTES,
+    normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
+    normalizeAttachmentRecord: deps.normalizeAttachmentRecord,
+    normalizeAttachmentRecords: deps.normalizeAttachmentRecords,
+    normalizeDiscussionRecord: deps.normalizeDiscussionRecord,
+    path: deps.path,
     readSpeechMutationBody: deps.readSpeechMutationBody,
-    saveAnnotation: deps.saveAnnotation,
-    saveAnnotationReply: deps.saveAnnotationReply,
-    saveDiscussion: deps.saveDiscussion,
-    saveDiscussionReply: deps.saveDiscussionReply,
-    updateAnnotationById: deps.updateAnnotationById,
-    updateDiscussionById: deps.updateDiscussionById,
+    resolveAttachmentDescriptor: deps.resolveAttachmentDescriptor,
+    resolveStorageAbsolutePath: deps.resolveStorageAbsolutePath,
+    store: deps.store,
+  });
+  const papers = createPapersService({
+    createPaperId: deps.createPaperId,
+    deleteSpeechAttachmentsForRecords: speech.deleteAttachmentsForRecords,
+    enforceSnapshotArticleImagePolicy: deps.enforceSnapshotArticleImagePolicy,
+    fs: deps.fs,
+    HttpError: deps.HttpError,
+    normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
+    normalizeDiscussionRecord: deps.normalizeDiscussionRecord,
+    normalizePaperRecord: deps.normalizePaperRecord,
+    path: deps.path,
+    storageDir: deps.STORAGE_DIR,
+    store: deps.store,
+  });
+  const assets = createAssetsService({
+    fetchElsevierObject: papers.fetchElsevierObject,
+    servePrivateStorageAsset: deps.servePrivateStorageAsset,
+    serveStaticAsset: deps.serveStaticAsset,
   });
 
   return {
