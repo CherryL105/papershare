@@ -1,14 +1,26 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@testing-library/preact";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CatalogPage } from "../catalog/CatalogPage.jsx";
 import { DetailPage } from "../detail/DetailPage.jsx";
 import { resetClientStoreForTests } from "../shared/client-store.js";
 
+beforeEach(() => {
+  globalThis.fetch = vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      authenticated: false,
+      user: null,
+    }),
+  }));
+});
+
 afterEach(() => {
   cleanup();
   resetClientStoreForTests();
+  vi.restoreAllMocks();
 });
 
 describe("client page shells", () => {

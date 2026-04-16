@@ -10,13 +10,18 @@
 - [已完成] `tests/services.test.js` 已从透传型测试升级为真实 service 行为测试，覆盖 snapshot 读取、真实 `fetch()` 抓取、discussion 写入、Elsevier 资源代理等关键路径；`npm test` 当前全绿。
 - 剩余在 `core.js` 的主要职责已经收敛为：启动与环境装配、auth/users、静态资源与私有存储服务、record normalizer、少量共享 helper。后续如果还要继续瘦身，优先考虑再拆 `auth/users` 或 `static/storage`，但它们已经不是当前最大的结构瓶颈。
 
-### 2. [部分完成] `src/client/legacy/app-runtime.js` 仍是最大的前端结构债
+### 2. [持续推进] `src/client/legacy/app-runtime.js` 仍是最大的前端结构债
 - 本轮已经明确迁移路线，并完成 **Phase 1**：目录页的“上传新文章 + 搜索 + 文章列表”不再依赖原始 HTML 字符串与 legacy DOM 渲染，而是改成真实的 Preact 组件 `CatalogLibraryView`。
 - [已完成] 新增共享 `client-store`，统一承接 `auth / papers / catalog / session` 状态，以及 `initializeSession`、`login`、`logout`、`refreshPapers`、`submitPaper`、`setPaperSearch`、`openPaperDetail` 等 action，供 React 目录页和 legacy runtime 共用。
 - [已完成] catalog 页的原始 HTML 已缩减为 `profile / password / user-management / members` 四块 legacy 面板；`CatalogPage.jsx` 不再整页 `dangerouslySetInnerHTML`。
 - [已完成] legacy 启动改成页面感知：`catalog-runtime.js` / `detail-runtime.js` 分流启动，catalog runtime 不再绑定或渲染 paper form / search / list，避免与 React 争抢 DOM。
 - [已完成] 新增前端测试覆盖：目录页已验证登录前空态、登录后列表过滤、普通 URL 抓取跳转、403 fallback 提示，以及共享 store 的 session 恢复 / HTML import 分支；`npm test` 当前全绿。
-- 仍未完成的是 detail 页阅读/批注/讨论区域，以及目录页剩余的 profile/admin/members 仍然挂在 legacy runtime 上。下一阶段应优先继续拆 `detail/reader + discussion`，而不是回头再造新的 catalog 双轨逻辑。
+- [本轮已完成] detail 页 `library view` 已不再依赖 `RawMarkup + detail runtime`：新的 `DetailLibraryView` 直接通过共享 `client-store` 驱动阅读区、批注区、讨论区、URL/query/hash 路由、文献切换、线程选中、附件提交与内联编辑。
+- [本轮已完成] `client-store` 新增 `detail` slice，统一承接 `selectedPaper / articleHtml / annotations / discussions / selection / composer / edit state`，并暴露 `initializeDetailPage`、`selectPaper`、`saveAnnotation`、`saveDiscussionReply`、`saveDetailEdit` 等 action，detail 页不再依赖 legacy 本地状态机。
+- [本轮已完成] detail 相关纯逻辑已从 `app-runtime.js` 抽出到 `src/client/detail/detail-helpers.js`，包括文章快照提取、批注排序、选区捕获、高亮恢复、附件校验与 FormData 构造。
+- [本轮已完成] `src/client/shared/legacy-runtime.js` 已停止在 detail 页启动 legacy runtime；`src/client/detail/main.jsx` 只挂载 React 页面。
+- [本轮已完成] 新增 detail store / 页面测试，覆盖初始化 fallback、deep-link 恢复、批注创建、讨论回复、讨论编辑/删除、批注清空、detail 页真实渲染与返回列表跳转；`npm test` 当前全绿。
+- 仍未完成的是：`app-runtime.js` 中旧的 detail 逻辑还在文件里，虽然已不再参与 detail 页启动，但体积尚未真正清理；另外 catalog 页的 `profile / password / user-management / members` 仍然挂在 legacy runtime 上。下一阶段可继续删除失活的 detail 代码，再推进 catalog 剩余面板 React 化。
 
 ## 二、性能热点
 
@@ -56,11 +61,11 @@
 - [已完成] bootstrap 管理员密码已改为通过 `PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD` 注入，首次创建时若缺失该环境变量会直接启动失败；`users` 表和登录态也新增 `mustChangePassword`，强制 bootstrap 账号先改密再访问其它受保护 API。
 - `readRequestBody` 一类请求解析 helper 里仍有不少重复的 `String(...).trim()` / 错误消息模板，可继续抽取。
 - [已完成] `listByIds` / `papers.listByIdsWithStoredActivity()` 已改为按 900 条分块查询，避免触发 SQLite 999 参数限制。
-- [部分完成] React 入口不再都是空壳：catalog 首页主 library view 已经 React 化，但 detail 页与剩余账户/成员面板仍然处于 React + legacy 双轨阶段。
+- [部分完成] React 入口不再都是空壳：catalog 首页主 library view 与 detail 页 library view 都已 React 化，当前剩余双轨区域主要是目录页的账户/成员面板，以及 `app-runtime.js` 内仍待清理的失活 detail 逻辑。
 
 ## 优先级建议（按 ROI）
 
-1. **继续推进 detail 页阅读/批注/讨论 React 化**，这是当前最大的结构债。
+1. **删除 `app-runtime.js` 中已失活的 detail 代码，并继续 React 化 catalog 剩余 profile/admin/members 面板**，把前端双轨期真正收尾。
 2. **dashboard 查询缓存**。
 3. **抽取服务端请求解析 helper**，减少 `String(...).trim()` 与错误模板重复。
 4. **如果还想继续压缩服务端复杂度，再拆 `auth/users` 或 `static/storage`**，但这已经是“锦上添花”而不是当前主瓶颈。

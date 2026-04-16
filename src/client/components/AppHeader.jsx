@@ -1,11 +1,17 @@
-export function AppHeader({ showViewSwitcher = false }) {
+export function AppHeader({
+  authControlsHidden = true,
+  currentUserLabel = "",
+  databaseStatus = "服务初始化中...",
+  onLogout,
+  showViewSwitcher = false,
+}) {
   return (
     <section className="page-header">
       <div className="top-bar">
         <div className="top-bar-brand">
           <p className="eyebrow top-bar-label">PaperShare</p>
           <span id="database-status" className="status-pill">
-            服务初始化中...
+            {databaseStatus}
           </span>
         </div>
 
@@ -13,9 +19,11 @@ export function AppHeader({ showViewSwitcher = false }) {
           Papershare 文章分享讨论
         </h1>
 
-        <div id="auth-controls" className="auth-controls is-hidden">
-          <span id="current-user" className="status-pill"></span>
-          <button id="logout-button" className="ghost-button" type="button">
+        <div id="auth-controls" className={`auth-controls${authControlsHidden ? " is-hidden" : ""}`}>
+          <span id="current-user" className="status-pill">
+            {currentUserLabel}
+          </span>
+          <button id="logout-button" className="ghost-button" type="button" onClick={onLogout}>
             退出登录
           </button>
         </div>

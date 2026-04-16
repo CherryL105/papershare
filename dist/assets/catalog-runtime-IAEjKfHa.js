@@ -1,1 +1,0 @@
-import{t as e}from"./app-runtime-BnHD-O52.js";function t(){e()}export{t as bootCatalogLegacyRuntime};

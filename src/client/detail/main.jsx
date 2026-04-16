@@ -1,6 +1,5 @@
 import { render } from "preact";
 import { DetailPage } from "./DetailPage.jsx";
-import { bootLegacyRuntime } from "../shared/legacy-runtime.js";
 
 const root = document.getElementById("app");
 
@@ -9,4 +8,3 @@ if (!root) {
 }
 
 render(<DetailPage />, root);
-void bootLegacyRuntime();

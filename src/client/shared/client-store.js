@@ -1,15 +1,61 @@
 import { useEffect, useState } from "preact/hooks";
+import * as sharedModule from "../../../shared/papershare-shared.js";
+import {
+  appendFilesToEditableItems,
+  areEditableAttachmentsUnchanged,
+  compareAnnotationsForDisplay,
+  compareDiscussionsForDisplay,
+  createEditableAttachmentItems,
+  createEmptyComposerState,
+  createEmptyEditState,
+  createSpeechFormData,
+  extractReadableArticleHtml,
+  hasSelectionOverlap,
+  mergeAttachmentFiles,
+  readPaperIdFromHash,
+  readPaperRouteFromQuery,
+  removeEditableAttachmentByKey,
+  removeFileByIndex,
+  splitEditableAttachmentItems,
+  supportsArticleImages,
+  validateAttachmentFiles,
+  validateEditableAttachmentItems,
+  writePaperIdToHash,
+} from "../detail/detail-helpers.js";
+
+const shared = sharedModule?.default || sharedModule;
+const {
+  canDeleteOwnedRecord,
+  doesRecordBelongToUser,
+  getThreadRootAnnotationId,
+  getThreadRootDiscussionId,
+  isDiscussionReply,
+  isReplyAnnotation,
+} = shared;
 
 const DEFAULT_API_ORIGIN = "http://127.0.0.1:3000";
 const API_BASE_URL_STORAGE_KEY = "papershare_api_base_url";
 const SESSION_TOKEN_STORAGE_KEY = "papershare_session_token";
 const CURRENT_USER_STORAGE_KEY = "papershare_current_user";
+const LIBRARY_INDEX_PATH = "./index.html";
 const PAPER_DETAIL_PATH = "./paper.html";
 
 const listeners = new Set();
 let navigateToUrl = defaultNavigateToUrl;
 
 let clientState = createInitialClientState();
+
+const DETAIL_COMPOSER_KEYS = Object.freeze({
+  annotation: "annotationComposer",
+  discussion: "discussionComposer",
+  discussionReply: "discussionReplyComposer",
+  reply: "replyComposer",
+});
+
+const DETAIL_EDIT_KEYS = Object.freeze({
+  annotation: "annotationEditState",
+  discussion: "discussionEditState",
+});
 
 export function getClientState() {
   return clientState;
@@ -59,6 +105,7 @@ export async function initializeSession() {
           paperFormStatus: "登录后可抓取文献",
           searchTerm: "",
         },
+        detail: createInitialDetailState(),
       });
     }
   } catch (error) {
@@ -75,6 +122,7 @@ export async function initializeSession() {
       catalog: {
         paperFormStatus: "请先启动 server.js",
       },
+      detail: createInitialDetailState(),
     });
     throw error;
   } finally {
@@ -141,16 +189,25 @@ export async function refreshPapers() {
       papers: {
         items: [],
       },
+      detail: {
+        selectedPaper: null,
+        selectedPaperId: "",
+      },
     });
     return [];
   }
 
   const papers = await apiRequest("/api/papers");
   const sortedPapers = [...papers].sort(comparePapersForList);
+  const selectedPaper =
+    sortedPapers.find((paper) => paper.id === clientState.detail.selectedPaperId) || null;
 
   updateClientState({
     papers: {
       items: sortedPapers,
+    },
+    detail: {
+      selectedPaper: selectedPaper || clientState.detail.selectedPaper,
     },
   });
 
@@ -213,6 +270,841 @@ export async function submitPaper({ sourceUrl, rawHtml }) {
   }
 }
 
+export async function initializeDetailPage(options = {}) {
+  updateClientState({
+    detail: {
+      isInitializing: true,
+    },
+  });
+
+  try {
+    const authState = options.skipSessionInit
+      ? {
+          authenticated: Boolean(clientState.auth.currentUser),
+          user: clientState.auth.currentUser,
+        }
+      : await initializeSession();
+
+    if (!authState.authenticated || !authState.user) {
+      updateClientState({
+        detail: createInitialDetailState(),
+      });
+      return authState;
+    }
+
+    await apiRequest("/api/status");
+    updateClientState({
+      auth: {
+        serverReady: true,
+        databaseStatus: "服务已连接",
+      },
+    });
+
+    const papers = await refreshPapers();
+    await syncDetailRouteFromLocation({ papers, forceReload: true });
+
+    return authState;
+  } finally {
+    updateClientState({
+      detail: {
+        isInitializing: false,
+      },
+    });
+  }
+}
+
+export async function syncDetailRouteFromLocation(options = {}) {
+  if (!clientState.auth.currentUser) {
+    return null;
+  }
+
+  const papers = Array.isArray(options.papers) ? options.papers : clientState.papers.items;
+  const route = readPaperRouteFromQuery();
+  const hashPaperId = readPaperIdFromHash();
+  const requestedPaperId = route.paperId || hashPaperId;
+  const preferredPaperId = papers.some((paper) => paper.id === requestedPaperId) ? requestedPaperId : "";
+  const fallbackPaperId = preferredPaperId || papers[0]?.id || "";
+  const nextPanel = route.panel === "discussion" ? "discussion" : "reader";
+
+  if (!fallbackPaperId) {
+    updateClientState({
+      detail: {
+        ...createInitialDetailState(),
+        libraryPanel: nextPanel,
+      },
+    });
+    return null;
+  }
+
+  if (options.forceReload || clientState.detail.selectedPaperId !== fallbackPaperId) {
+    return selectPaper(fallbackPaperId, {
+      panel: nextPanel,
+      updateHash: false,
+      focusAnnotationId: route.annotationId,
+      focusReplyId: route.replyId,
+      focusDiscussionId: route.discussionId,
+      focusDiscussionReplyId: route.discussionReplyId,
+    });
+  }
+
+  updateClientState({
+    detail: {
+      libraryPanel: nextPanel,
+      ...resolveDetailFocusState(clientState.detail.annotations, clientState.detail.discussions, {
+        focusAnnotationId: route.annotationId,
+        focusReplyId: route.replyId,
+        focusDiscussionId: route.discussionId,
+        focusDiscussionReplyId: route.discussionReplyId,
+      }),
+    },
+  });
+
+  return clientState.detail.selectedPaper;
+}
+
+export async function handleDetailHashChange() {
+  if (!clientState.auth.currentUser) {
+    return null;
+  }
+
+  const paperId = readPaperIdFromHash();
+
+  if (!paperId || paperId === clientState.detail.selectedPaperId) {
+    return null;
+  }
+
+  if (!clientState.papers.items.some((paper) => paper.id === paperId)) {
+    return null;
+  }
+
+  return selectPaper(paperId, { updateHash: false });
+}
+
+export async function selectPaper(paperId, options = {}) {
+  if (!clientState.auth.currentUser) {
+    return null;
+  }
+
+  const paper = clientState.papers.items.find((item) => item.id === paperId);
+
+  if (!paper) {
+    return null;
+  }
+
+  const panel = options.panel === "discussion" ? "discussion" : clientState.detail.libraryPanel;
+
+  updateClientState({
+    detail: {
+      ...createInitialDetailState(),
+      libraryPanel: panel,
+      selectedPaperId: paper.id,
+      selectedPaper: paper,
+    },
+  });
+
+  const [paperDetail, annotations, discussions] = await Promise.all([
+    apiRequest(`/api/papers/${encodeURIComponent(paper.id)}`),
+    apiRequest(`/api/papers/${encodeURIComponent(paper.id)}/annotations`),
+    apiRequest(`/api/papers/${encodeURIComponent(paper.id)}/discussions`),
+  ]);
+
+  let articleHtml = "";
+
+  if (paperDetail.hasSnapshot) {
+    const content = await apiRequest(`/api/papers/${encodeURIComponent(paper.id)}/content`);
+    articleHtml = extractReadableArticleHtml(content.rawHtml, paperDetail.sourceUrl, {
+      allowImages: supportsArticleImages(paperDetail),
+      buildApiUrl,
+    });
+  }
+
+  const sortedAnnotations = [...annotations].sort(compareAnnotationsForDisplay);
+  const sortedDiscussions = [...discussions].sort(compareDiscussionsForDisplay);
+  const focusState = resolveDetailFocusState(sortedAnnotations, sortedDiscussions, options);
+
+  updateClientState({
+    detail: {
+      libraryPanel: panel,
+      selectedPaperId: paper.id,
+      selectedPaper: paperDetail,
+      articleHtml,
+      articleLoaded: true,
+      annotations: sortedAnnotations,
+      discussions: sortedDiscussions,
+      ...focusState,
+    },
+  });
+
+  if (options.updateHash !== false) {
+    writePaperIdToHash(paper.id);
+  }
+
+  return paperDetail;
+}
+
+export async function refreshSelectedPaperAnnotations() {
+  if (!clientState.auth.currentUser || !clientState.detail.selectedPaperId) {
+    updateClientState({
+      detail: {
+        annotations: [],
+        selectedAnnotationId: null,
+        selectedReplyId: null,
+        annotationNavigationTargetId: null,
+      },
+    });
+    return [];
+  }
+
+  const annotations = await apiRequest(
+    `/api/papers/${encodeURIComponent(clientState.detail.selectedPaperId)}/annotations`
+  );
+  const sortedAnnotations = [...annotations].sort(compareAnnotationsForDisplay);
+  const topLevelAnnotationIds = new Set(sortedAnnotations.filter((item) => !isReplyAnnotation(item)).map((item) => item.id));
+  const annotationIds = new Set(sortedAnnotations.map((item) => item.id));
+
+  updateClientState({
+    detail: {
+      annotations: sortedAnnotations,
+      selectedAnnotationId: topLevelAnnotationIds.has(clientState.detail.selectedAnnotationId)
+        ? clientState.detail.selectedAnnotationId
+        : null,
+      selectedReplyId: annotationIds.has(clientState.detail.selectedReplyId)
+        ? clientState.detail.selectedReplyId
+        : null,
+    },
+  });
+
+  return sortedAnnotations;
+}
+
+export async function refreshSelectedPaperDiscussions() {
+  if (!clientState.auth.currentUser || !clientState.detail.selectedPaperId) {
+    updateClientState({
+      detail: {
+        discussions: [],
+        selectedDiscussionId: null,
+        selectedDiscussionReplyId: null,
+        discussionNavigationTargetId: null,
+      },
+    });
+    return [];
+  }
+
+  const discussions = await apiRequest(
+    `/api/papers/${encodeURIComponent(clientState.detail.selectedPaperId)}/discussions`
+  );
+  const sortedDiscussions = [...discussions].sort(compareDiscussionsForDisplay);
+  const topLevelDiscussionIds = new Set(
+    sortedDiscussions.filter((item) => !isDiscussionReply(item)).map((item) => item.id)
+  );
+  const discussionIds = new Set(sortedDiscussions.map((item) => item.id));
+
+  updateClientState({
+    detail: {
+      discussions: sortedDiscussions,
+      selectedDiscussionId: topLevelDiscussionIds.has(clientState.detail.selectedDiscussionId)
+        ? clientState.detail.selectedDiscussionId
+        : null,
+      selectedDiscussionReplyId: discussionIds.has(clientState.detail.selectedDiscussionReplyId)
+        ? clientState.detail.selectedDiscussionReplyId
+        : null,
+    },
+  });
+
+  return sortedDiscussions;
+}
+
+export function setLibraryPanel(panelName) {
+  const nextPanel = panelName === "discussion" ? "discussion" : "reader";
+
+  updateClientState({
+    detail: {
+      libraryPanel: nextPanel,
+      pendingSelection: nextPanel === "discussion" ? null : clientState.detail.pendingSelection,
+    },
+  });
+}
+
+export function setPendingSelection(selection) {
+  updateClientState({
+    detail: {
+      pendingSelection: selection || null,
+    },
+  });
+}
+
+export function clearPendingSelection() {
+  updateClientState({
+    detail: {
+      pendingSelection: null,
+    },
+  });
+}
+
+export function setDetailComposerDraft(kind, draft) {
+  const composerKey = resolveComposerKey(kind);
+
+  updateClientState({
+    detail: {
+      [composerKey]: {
+        draft: String(draft || ""),
+      },
+    },
+  });
+}
+
+export function addDetailComposerAttachments(kind, nextFiles) {
+  const composerKey = resolveComposerKey(kind);
+  const mergedFiles = mergeAttachmentFiles(clientState.detail[composerKey].attachments, nextFiles);
+
+  validateAttachmentFiles(mergedFiles);
+
+  updateClientState({
+    detail: {
+      [composerKey]: {
+        attachments: mergedFiles,
+      },
+    },
+  });
+}
+
+export function removeDetailComposerAttachment(kind, index) {
+  const composerKey = resolveComposerKey(kind);
+
+  updateClientState({
+    detail: {
+      [composerKey]: {
+        attachments: removeFileByIndex(clientState.detail[composerKey].attachments, index),
+      },
+    },
+  });
+}
+
+export function clearDetailComposerAttachments(kind) {
+  const composerKey = resolveComposerKey(kind);
+
+  updateClientState({
+    detail: {
+      [composerKey]: {
+        attachments: [],
+      },
+    },
+  });
+}
+
+export async function saveAnnotation() {
+  const currentUser = clientState.auth.currentUser;
+  const paper = clientState.detail.selectedPaper;
+  const composer = clientState.detail.annotationComposer;
+  const pendingSelection = clientState.detail.pendingSelection;
+
+  if (!currentUser || !paper || !pendingSelection) {
+    return null;
+  }
+
+  const note = String(composer.draft || "").trim();
+  const attachments = composer.attachments || [];
+  validateAttachmentFiles(attachments);
+
+  if (!note && attachments.length === 0) {
+    throw new Error("请先填写批注内容或选择附件。");
+  }
+
+  if (hasSelectionOverlap(clientState.detail.annotations, pendingSelection)) {
+    throw new Error("当前版本暂不支持重叠批注，请换一段未高亮的文本再试。");
+  }
+
+  updateClientState({
+    detail: {
+      isSavingAnnotation: true,
+    },
+  });
+
+  try {
+    const formData = createSpeechFormData({
+      note,
+      attachments,
+      selection: pendingSelection,
+    });
+    const annotation = await apiRequest(
+      `/api/papers/${encodeURIComponent(paper.id)}/annotations`,
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
+    const nextAnnotations = [...clientState.detail.annotations, annotation].sort(
+      compareAnnotationsForDisplay
+    );
+
+    updateClientState({
+      detail: {
+        annotations: nextAnnotations,
+        selectedAnnotationId: annotation.id,
+        selectedReplyId: null,
+        annotationNavigationTargetId: annotation.id,
+        pendingSelection: null,
+        annotationComposer: createEmptyComposerState(),
+      },
+    });
+
+    return annotation;
+  } finally {
+    updateClientState({
+      detail: {
+        isSavingAnnotation: false,
+      },
+    });
+  }
+}
+
+export async function saveDiscussion() {
+  const currentUser = clientState.auth.currentUser;
+  const paper = clientState.detail.selectedPaper;
+  const composer = clientState.detail.discussionComposer;
+
+  if (!currentUser || !paper) {
+    return null;
+  }
+
+  const note = String(composer.draft || "").trim();
+  const attachments = composer.attachments || [];
+  validateAttachmentFiles(attachments);
+
+  if (!note && attachments.length === 0) {
+    throw new Error("请先填写讨论内容或选择附件。");
+  }
+
+  updateClientState({
+    detail: {
+      isSavingDiscussion: true,
+    },
+  });
+
+  try {
+    const formData = createSpeechFormData({ note, attachments });
+    const discussion = await apiRequest(
+      `/api/papers/${encodeURIComponent(paper.id)}/discussions`,
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
+    const nextDiscussions = [...clientState.detail.discussions, discussion].sort(
+      compareDiscussionsForDisplay
+    );
+
+    updateClientState({
+      detail: {
+        discussions: nextDiscussions,
+        selectedDiscussionId: discussion.id,
+        selectedDiscussionReplyId: null,
+        discussionNavigationTargetId: discussion.id,
+        discussionComposer: createEmptyComposerState(),
+      },
+    });
+
+    return discussion;
+  } finally {
+    updateClientState({
+      detail: {
+        isSavingDiscussion: false,
+      },
+    });
+  }
+}
+
+export async function saveAnnotationReply() {
+  return saveSpeechReply("annotation");
+}
+
+export async function saveDiscussionReply() {
+  return saveSpeechReply("discussion");
+}
+
+export function selectAnnotationThread(annotationId) {
+  updateClientState({
+    detail: {
+      selectedAnnotationId: annotationId || null,
+      selectedReplyId: null,
+      annotationNavigationTargetId: annotationId || null,
+      annotationEditState: createEmptyEditState(),
+    },
+  });
+}
+
+export function selectDiscussionThread(discussionId) {
+  updateClientState({
+    detail: {
+      selectedDiscussionId: discussionId || null,
+      selectedDiscussionReplyId: null,
+      discussionNavigationTargetId: discussionId || null,
+      discussionEditState: createEmptyEditState(),
+    },
+  });
+}
+
+export function selectAnnotationReply(replyId) {
+  const reply =
+    clientState.detail.annotations.find((annotation) => annotation.id === replyId) || null;
+
+  updateClientState({
+    detail: {
+      selectedAnnotationId: reply ? getThreadRootAnnotationId(reply) : clientState.detail.selectedAnnotationId,
+      selectedReplyId: replyId || null,
+      annotationNavigationTargetId: reply ? getThreadRootAnnotationId(reply) : null,
+      annotationEditState: createEmptyEditState(),
+    },
+  });
+}
+
+export function selectDiscussionReply(replyId) {
+  const reply =
+    clientState.detail.discussions.find((discussion) => discussion.id === replyId) || null;
+
+  updateClientState({
+    detail: {
+      selectedDiscussionId: reply
+        ? getThreadRootDiscussionId(reply)
+        : clientState.detail.selectedDiscussionId,
+      selectedDiscussionReplyId: replyId || null,
+      discussionNavigationTargetId: reply ? getThreadRootDiscussionId(reply) : null,
+      discussionEditState: createEmptyEditState(),
+    },
+  });
+}
+
+export async function deleteSelectedAnnotation() {
+  return deleteSelectedSpeech("annotation");
+}
+
+export async function deleteSelectedDiscussion() {
+  return deleteSelectedSpeech("discussion");
+}
+
+export async function deleteAnnotationReply(replyId) {
+  return deleteSpeechReply("annotation", replyId);
+}
+
+export async function deleteDiscussionReply(replyId) {
+  return deleteSpeechReply("discussion", replyId);
+}
+
+export async function clearSelectedPaperAnnotations() {
+  const currentUser = clientState.auth.currentUser;
+  const paper = clientState.detail.selectedPaper;
+
+  if (!currentUser || !paper) {
+    return { ok: false, deletedCount: 0 };
+  }
+
+  await apiRequest(`/api/papers/${encodeURIComponent(paper.id)}/annotations`, {
+    method: "DELETE",
+  });
+
+  const ownAnnotationIds = new Set(
+    clientState.detail.annotations
+      .filter((annotation) => doesRecordBelongToUser(annotation, currentUser))
+      .map((annotation) => annotation.id)
+  );
+  const nextAnnotations = clientState.detail.annotations.filter((annotation) => {
+    const threadRootId = getThreadRootAnnotationId(annotation);
+    return !ownAnnotationIds.has(annotation.id) && !ownAnnotationIds.has(threadRootId);
+  });
+
+  updateClientState({
+    detail: {
+      annotations: nextAnnotations,
+      pendingSelection: null,
+      selectedAnnotationId: ownAnnotationIds.has(clientState.detail.selectedAnnotationId)
+        ? null
+        : clientState.detail.selectedAnnotationId,
+      selectedReplyId: ownAnnotationIds.has(clientState.detail.selectedReplyId)
+        ? null
+        : clientState.detail.selectedReplyId,
+      annotationNavigationTargetId: null,
+      annotationComposer: createEmptyComposerState(),
+      replyComposer: createEmptyComposerState(),
+      annotationEditState: createEmptyEditState(),
+    },
+  });
+
+  return { ok: true, deletedCount: ownAnnotationIds.size };
+}
+
+export async function deleteSelectedPaper() {
+  const paper = clientState.detail.selectedPaper;
+  const currentUser = clientState.auth.currentUser;
+
+  if (!paper || !currentUser) {
+    return null;
+  }
+
+  if (!canDeleteOwnedRecord(paper, currentUser)) {
+    throw new Error("无权删除该文献");
+  }
+
+  await apiRequest(`/api/papers/${encodeURIComponent(paper.id)}`, {
+    method: "DELETE",
+  });
+
+  const deletedPaperId = paper.id;
+  const papers = await refreshPapers();
+  const nextPaperId = papers.find((item) => item.id !== deletedPaperId)?.id || "";
+
+  if (nextPaperId) {
+    return selectPaper(nextPaperId, {
+      panel: clientState.detail.libraryPanel,
+      updateHash: true,
+    });
+  }
+
+  writePaperIdToHash("");
+  updateClientState({
+    detail: {
+      ...createInitialDetailState(),
+      libraryPanel: clientState.detail.libraryPanel,
+    },
+  });
+
+  return null;
+}
+
+export function startDetailEdit(kind, recordId, targetType = kind) {
+  const config = resolveSpeechConfig(kind);
+  const record = clientState.detail[config.recordsKey].find((item) => item.id === recordId);
+
+  if (!record) {
+    return;
+  }
+
+  const nextEditState = {
+    targetId: record.id,
+    targetType,
+    draft: record.note || "",
+    attachments: createEditableAttachmentItems(record.attachments),
+    isSaving: false,
+  };
+
+  updateClientState({
+    detail: {
+      [config.editStateKey]: nextEditState,
+      ...(targetType === "reply" ? { [config.selectedReplyKey]: record.id } : {}),
+    },
+  });
+}
+
+export function cancelDetailEdit(kind) {
+  const editStateKey = resolveEditStateKey(kind);
+
+  updateClientState({
+    detail: {
+      [editStateKey]: createEmptyEditState(),
+    },
+  });
+}
+
+export function setDetailEditDraft(kind, draft) {
+  const editStateKey = resolveEditStateKey(kind);
+
+  updateClientState({
+    detail: {
+      [editStateKey]: {
+        draft: String(draft || ""),
+      },
+    },
+  });
+}
+
+export function addDetailEditAttachments(kind, nextFiles) {
+  const editStateKey = resolveEditStateKey(kind);
+  const currentItems = clientState.detail[editStateKey].attachments;
+  const nextItems = appendFilesToEditableItems(currentItems, nextFiles);
+
+  validateEditableAttachmentItems(nextItems);
+
+  updateClientState({
+    detail: {
+      [editStateKey]: {
+        attachments: nextItems,
+      },
+    },
+  });
+}
+
+export function clearDetailEditAttachments(kind) {
+  const editStateKey = resolveEditStateKey(kind);
+
+  updateClientState({
+    detail: {
+      [editStateKey]: {
+        attachments: [],
+      },
+    },
+  });
+}
+
+export function removeDetailEditAttachment(kind, key) {
+  const editStateKey = resolveEditStateKey(kind);
+
+  updateClientState({
+    detail: {
+      [editStateKey]: {
+        attachments: removeEditableAttachmentByKey(
+          clientState.detail[editStateKey].attachments,
+          key
+        ),
+      },
+    },
+  });
+}
+
+export async function saveDetailEdit(kind) {
+  const config = resolveSpeechConfig(kind);
+  const editState = clientState.detail[config.editStateKey];
+  const record = clientState.detail[config.recordsKey].find((item) => item.id === editState.targetId);
+
+  if (!record || editState.isSaving) {
+    return null;
+  }
+
+  const nextNote = String(editState.draft || "").trim();
+  const nextAttachments = editState.attachments || [];
+
+  validateEditableAttachmentItems(nextAttachments);
+
+  if (!nextNote && nextAttachments.length === 0) {
+    throw new Error(
+      editState.targetType === "reply"
+        ? "请至少保留回复内容或一个附件。"
+        : `请至少保留${config.label}内容或一个附件。`
+    );
+  }
+
+  if (nextNote === record.note && areEditableAttachmentsUnchanged(nextAttachments, record)) {
+    cancelDetailEdit(kind);
+    return record;
+  }
+
+  updateClientState({
+    detail: {
+      [config.editStateKey]: {
+        isSaving: true,
+      },
+    },
+  });
+
+  try {
+    const attachments = splitEditableAttachmentItems(nextAttachments);
+    const formData = createSpeechFormData({
+      note: nextNote,
+      attachments: attachments.newFiles,
+      retainedAttachments: attachments.existingAttachments,
+    });
+    const updated = await apiRequest(`${config.apiBasePath}/${encodeURIComponent(record.id)}`, {
+      method: "PATCH",
+      body: formData,
+    });
+    const nextRecords = clientState.detail[config.recordsKey]
+      .map((item) => (item.id === updated.id ? updated : item))
+      .sort(config.sortRecords);
+
+    updateClientState({
+      detail: {
+        [config.recordsKey]: nextRecords,
+        [config.editStateKey]: createEmptyEditState(),
+        ...(editState.targetType === "reply" ? { [config.selectedReplyKey]: updated.id } : {}),
+      },
+    });
+
+    return updated;
+  } finally {
+    if (clientState.detail[config.editStateKey].targetId) {
+      updateClientState({
+        detail: {
+          [config.editStateKey]: {
+            isSaving: false,
+          },
+        },
+      });
+    }
+  }
+}
+
+export async function openAnnotationLocation(paperId, annotationId, options = {}) {
+  const focusReplyId = String(options.focusReplyId || "").trim();
+
+  if (!isDetailPage()) {
+    navigateToUrl(
+      buildPaperDetailUrl({
+        paperId,
+        panel: "reader",
+        annotationId,
+        replyId: focusReplyId,
+      })
+    );
+    return;
+  }
+
+  setLibraryPanel("reader");
+
+  if (clientState.detail.selectedPaperId !== paperId) {
+    await selectPaper(paperId, {
+      panel: "reader",
+      focusAnnotationId: annotationId,
+      focusReplyId,
+    });
+    return;
+  }
+
+  updateClientState({
+    detail: {
+      selectedAnnotationId: annotationId || null,
+      selectedReplyId: focusReplyId || null,
+      annotationNavigationTargetId: annotationId || null,
+    },
+  });
+}
+
+export async function openDiscussionLocation(paperId, discussionId, options = {}) {
+  const focusReplyId = String(options.focusReplyId || "").trim();
+
+  if (!isDetailPage()) {
+    navigateToUrl(
+      buildPaperDetailUrl({
+        paperId,
+        panel: "discussion",
+        discussionId,
+        discussionReplyId: focusReplyId,
+      })
+    );
+    return;
+  }
+
+  setLibraryPanel("discussion");
+
+  if (clientState.detail.selectedPaperId !== paperId) {
+    await selectPaper(paperId, {
+      panel: "discussion",
+      focusDiscussionId: discussionId,
+      focusDiscussionReplyId: focusReplyId,
+    });
+    return;
+  }
+
+  updateClientState({
+    detail: {
+      selectedDiscussionId: discussionId || null,
+      selectedDiscussionReplyId: focusReplyId || null,
+      discussionNavigationTargetId: discussionId || null,
+    },
+  });
+}
+
+export function navigateToLibraryIndex() {
+  navigateToUrl(LIBRARY_INDEX_PATH);
+}
+
 export function setPaperSearch(term) {
   updateClientState({
     catalog: {
@@ -255,12 +1147,20 @@ export function buildPaperDetailUrl(options = {}) {
   return query ? `${PAPER_DETAIL_PATH}?${query}` : PAPER_DETAIL_PATH;
 }
 
-export function openPaperDetail(paperId) {
-  if (!paperId) {
+export function openPaperDetail(input) {
+  const options =
+    input && typeof input === "object" ? input : { paperId: input, panel: "reader" };
+
+  if (!options.paperId) {
     return;
   }
 
-  navigateToUrl(buildPaperDetailUrl({ paperId, panel: "reader" }));
+  navigateToUrl(
+    buildPaperDetailUrl({
+      panel: "reader",
+      ...options,
+    })
+  );
 }
 
 export function getVisiblePapers(papers, searchTerm) {
@@ -418,6 +1318,37 @@ function createInitialClientState() {
       searchTerm: "",
       isSavingPaper: false,
     },
+    detail: createInitialDetailState(),
+  };
+}
+
+function createInitialDetailState() {
+  return {
+    isInitializing: false,
+    libraryPanel: "reader",
+    selectedPaperId: "",
+    selectedPaper: null,
+    articleHtml: "",
+    articleLoaded: false,
+    pendingSelection: null,
+    annotations: [],
+    discussions: [],
+    selectedAnnotationId: null,
+    selectedReplyId: null,
+    annotationNavigationTargetId: null,
+    selectedDiscussionId: null,
+    selectedDiscussionReplyId: null,
+    discussionNavigationTargetId: null,
+    isSavingAnnotation: false,
+    isSavingReply: false,
+    isSavingDiscussion: false,
+    isSavingDiscussionReply: false,
+    annotationComposer: createEmptyComposerState(),
+    replyComposer: createEmptyComposerState(),
+    discussionComposer: createEmptyComposerState(),
+    discussionReplyComposer: createEmptyComposerState(),
+    annotationEditState: createEmptyEditState(),
+    discussionEditState: createEmptyEditState(),
   };
 }
 
@@ -428,7 +1359,10 @@ function emitClientState() {
 }
 
 function updateClientState(partial) {
-  clientState = mergeClientState(clientState, typeof partial === "function" ? partial(clientState) : partial);
+  clientState = mergeClientState(
+    clientState,
+    typeof partial === "function" ? partial(clientState) : partial
+  );
   emitClientState();
   return clientState;
 }
@@ -440,7 +1374,38 @@ function mergeClientState(baseState, partialState = {}) {
     session: partialState.session ? { ...baseState.session, ...partialState.session } : baseState.session,
     auth: partialState.auth ? { ...baseState.auth, ...partialState.auth } : baseState.auth,
     papers: partialState.papers ? { ...baseState.papers, ...partialState.papers } : baseState.papers,
-    catalog: partialState.catalog ? { ...baseState.catalog, ...partialState.catalog } : baseState.catalog,
+    catalog: partialState.catalog
+      ? { ...baseState.catalog, ...partialState.catalog }
+      : baseState.catalog,
+    detail: partialState.detail ? mergeDetailState(baseState.detail, partialState.detail) : baseState.detail,
+  };
+}
+
+function mergeDetailState(baseDetailState, partialDetailState = {}) {
+  return {
+    ...baseDetailState,
+    ...partialDetailState,
+    annotationComposer: partialDetailState.annotationComposer
+      ? { ...baseDetailState.annotationComposer, ...partialDetailState.annotationComposer }
+      : baseDetailState.annotationComposer,
+    replyComposer: partialDetailState.replyComposer
+      ? { ...baseDetailState.replyComposer, ...partialDetailState.replyComposer }
+      : baseDetailState.replyComposer,
+    discussionComposer: partialDetailState.discussionComposer
+      ? { ...baseDetailState.discussionComposer, ...partialDetailState.discussionComposer }
+      : baseDetailState.discussionComposer,
+    discussionReplyComposer: partialDetailState.discussionReplyComposer
+      ? {
+          ...baseDetailState.discussionReplyComposer,
+          ...partialDetailState.discussionReplyComposer,
+        }
+      : baseDetailState.discussionReplyComposer,
+    annotationEditState: partialDetailState.annotationEditState
+      ? { ...baseDetailState.annotationEditState, ...partialDetailState.annotationEditState }
+      : baseDetailState.annotationEditState,
+    discussionEditState: partialDetailState.discussionEditState
+      ? { ...baseDetailState.discussionEditState, ...partialDetailState.discussionEditState }
+      : baseDetailState.discussionEditState,
   };
 }
 
@@ -478,7 +1443,207 @@ function applyLoggedOutState(loginStatus) {
       paperFormStatus: clientState.auth.serverReady ? "登录后可抓取文献" : "请先启动 server.js",
       searchTerm: "",
     },
+    detail: createInitialDetailState(),
   });
+}
+
+function resolveDetailFocusState(annotations, discussions, options = {}) {
+  const topLevelAnnotations = new Set(
+    annotations.filter((annotation) => !isReplyAnnotation(annotation)).map((annotation) => annotation.id)
+  );
+  const annotationIds = new Set(annotations.map((annotation) => annotation.id));
+  const topLevelDiscussions = new Set(
+    discussions
+      .filter((discussion) => !isDiscussionReply(discussion))
+      .map((discussion) => discussion.id)
+  );
+  const discussionIds = new Set(discussions.map((discussion) => discussion.id));
+
+  return {
+    selectedAnnotationId: topLevelAnnotations.has(options.focusAnnotationId)
+      ? options.focusAnnotationId
+      : null,
+    selectedReplyId: annotationIds.has(options.focusReplyId) ? options.focusReplyId : null,
+    annotationNavigationTargetId: topLevelAnnotations.has(options.focusAnnotationId)
+      ? options.focusAnnotationId
+      : null,
+    selectedDiscussionId: topLevelDiscussions.has(options.focusDiscussionId)
+      ? options.focusDiscussionId
+      : null,
+    selectedDiscussionReplyId: discussionIds.has(options.focusDiscussionReplyId)
+      ? options.focusDiscussionReplyId
+      : null,
+    discussionNavigationTargetId: topLevelDiscussions.has(options.focusDiscussionId)
+      ? options.focusDiscussionId
+      : null,
+  };
+}
+
+function resolveComposerKey(kind) {
+  return DETAIL_COMPOSER_KEYS[kind] || DETAIL_COMPOSER_KEYS.annotation;
+}
+
+function resolveEditStateKey(kind) {
+  return DETAIL_EDIT_KEYS[kind] || DETAIL_EDIT_KEYS.annotation;
+}
+
+function resolveSpeechConfig(kind) {
+  if (kind === "discussion") {
+    return {
+      apiBasePath: "/api/discussions",
+      editStateKey: "discussionEditState",
+      label: "讨论",
+      recordsKey: "discussions",
+      replyComposerKey: "discussionReplyComposer",
+      replySavingKey: "isSavingDiscussionReply",
+      selectedReplyKey: "selectedDiscussionReplyId",
+      selectedThreadKey: "selectedDiscussionId",
+      sortRecords: compareDiscussionsForDisplay,
+      threadRootId: getThreadRootDiscussionId,
+    };
+  }
+
+  return {
+    apiBasePath: "/api/annotations",
+    editStateKey: "annotationEditState",
+    label: "批注",
+    recordsKey: "annotations",
+    replyComposerKey: "replyComposer",
+    replySavingKey: "isSavingReply",
+    selectedReplyKey: "selectedReplyId",
+    selectedThreadKey: "selectedAnnotationId",
+    sortRecords: compareAnnotationsForDisplay,
+    threadRootId: getThreadRootAnnotationId,
+  };
+}
+
+async function saveSpeechReply(kind) {
+  const config = resolveSpeechConfig(kind);
+  const selectedThreadId = clientState.detail[config.selectedThreadKey];
+  const selectedReplyId = clientState.detail[config.selectedReplyKey];
+  const replyTargetId = selectedReplyId || selectedThreadId;
+  const replyTarget =
+    clientState.detail[config.recordsKey].find((item) => item.id === replyTargetId) || null;
+  const composer = clientState.detail[config.replyComposerKey];
+
+  if (!clientState.auth.currentUser || !replyTarget) {
+    return null;
+  }
+
+  const note = String(composer.draft || "").trim();
+  const attachments = composer.attachments || [];
+  validateAttachmentFiles(attachments);
+
+  if (!note && attachments.length === 0) {
+    throw new Error("请先填写回复内容或选择附件。");
+  }
+
+  updateClientState({
+    detail: {
+      [config.replySavingKey]: true,
+    },
+  });
+
+  try {
+    const formData = createSpeechFormData({ note, attachments });
+    const reply = await apiRequest(
+      `${config.apiBasePath}/${encodeURIComponent(replyTarget.id)}/replies`,
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
+    const nextRecords = [...clientState.detail[config.recordsKey], reply].sort(config.sortRecords);
+
+    updateClientState({
+      detail: {
+        [config.recordsKey]: nextRecords,
+        [config.selectedReplyKey]: reply.id,
+        [config.replyComposerKey]: createEmptyComposerState(),
+      },
+    });
+
+    return reply;
+  } finally {
+    updateClientState({
+      detail: {
+        [config.replySavingKey]: false,
+      },
+    });
+  }
+}
+
+async function deleteSelectedSpeech(kind) {
+  const config = resolveSpeechConfig(kind);
+  const record =
+    clientState.detail[config.recordsKey].find(
+      (item) => item.id === clientState.detail[config.selectedThreadKey]
+    ) || null;
+
+  if (!record) {
+    return null;
+  }
+
+  if (!canDeleteOwnedRecord(record, clientState.auth.currentUser)) {
+    throw new Error(`无权删除该${config.label}`);
+  }
+
+  await apiRequest(`${config.apiBasePath}/${encodeURIComponent(record.id)}`, {
+    method: "DELETE",
+  });
+
+  updateClientState({
+    detail: {
+      [config.recordsKey]: clientState.detail[config.recordsKey].filter(
+        (item) => config.threadRootId(item) !== record.id
+      ),
+      [config.selectedThreadKey]: null,
+      [config.selectedReplyKey]: null,
+      ...(kind === "discussion"
+        ? {
+            discussionNavigationTargetId: null,
+            discussionReplyComposer: createEmptyComposerState(),
+            discussionEditState: createEmptyEditState(),
+          }
+        : {
+            annotationNavigationTargetId: null,
+            replyComposer: createEmptyComposerState(),
+            annotationEditState: createEmptyEditState(),
+          }),
+    },
+  });
+
+  return record;
+}
+
+async function deleteSpeechReply(kind, replyId) {
+  const config = resolveSpeechConfig(kind);
+  const reply =
+    clientState.detail[config.recordsKey].find((item) => item.id === replyId) || null;
+
+  if (!reply) {
+    return null;
+  }
+
+  if (!canDeleteOwnedRecord(reply, clientState.auth.currentUser)) {
+    throw new Error("无权删除该回复");
+  }
+
+  await apiRequest(`${config.apiBasePath}/${encodeURIComponent(reply.id)}`, {
+    method: "DELETE",
+  });
+
+  updateClientState({
+    detail: {
+      [config.recordsKey]: clientState.detail[config.recordsKey].filter((item) => item.id !== reply.id),
+      [config.selectedReplyKey]:
+        clientState.detail[config.selectedReplyKey] === reply.id
+          ? null
+          : clientState.detail[config.selectedReplyKey],
+    },
+  });
+
+  return reply;
 }
 
 function comparePapersForList(left, right) {
@@ -655,4 +1820,8 @@ function defaultNavigateToUrl(url) {
   }
 
   window.location.assign(url);
+}
+
+function isDetailPage() {
+  return typeof document !== "undefined" && document.body?.dataset?.page === "detail";
 }
