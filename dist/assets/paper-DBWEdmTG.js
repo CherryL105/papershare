@@ -1,4 +1,4 @@
-import{a as e,i as t,n,o as r,r as i,s as a,t as o}from"./legacy-runtime-CthKYyGW.js";var s=`<main id="app-content" class="app-content is-hidden">
+import{a as e,i as t,n,r,t as i}from"./legacy-runtime-DNoj55nR.js";import{n as a,t as o}from"./preact.module-CuVQW3e5.js";var s=`<main id="app-content" class="app-content is-hidden">
         <button id="back-to-library-button" class="button" type="button">
           ←返回文章和讨论列表
         </button>
@@ -517,4 +517,4 @@ import{a as e,i as t,n,o as r,r as i,s as a,t as o}from"./legacy-runtime-CthKYyG
           </section>
         </section>
       </main>
-`,c=`/home/dictation/papershare/src/client/detail/DetailPage.jsx`;function l(){return e(a,{children:[e(t,{},void 0,!1,{fileName:c,lineNumber:9,columnNumber:7},this),e(`div`,{className:`page-shell`,children:[e(i,{},void 0,!1,{fileName:c,lineNumber:11,columnNumber:9},this),e(n,{html:s},void 0,!1,{fileName:c,lineNumber:12,columnNumber:9},this)]},void 0,!0,{fileName:c,lineNumber:10,columnNumber:7},this)]},void 0,!0)}var u=`/home/dictation/papershare/src/client/detail/main.jsx`,d=document.getElementById(`app`);if(!d)throw Error(`Detail root container was not found.`);r(e(l,{},void 0,!1,{fileName:u,lineNumber:11,columnNumber:8},void 0),d),o();
+`;function c(){return e(a,{children:[e(t,{}),e(`div`,{className:`page-shell`,children:[e(r,{}),e(n,{html:s})]})]})}var l=document.getElementById(`app`);if(!l)throw Error(`Detail root container was not found.`);o(e(c,{}),l),i();

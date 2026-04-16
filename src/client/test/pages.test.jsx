@@ -4,9 +4,11 @@ import { cleanup, render, screen } from "@testing-library/preact";
 import { afterEach, describe, expect, it } from "vitest";
 import { CatalogPage } from "../catalog/CatalogPage.jsx";
 import { DetailPage } from "../detail/DetailPage.jsx";
+import { resetClientStoreForTests } from "../shared/client-store.js";
 
 afterEach(() => {
   cleanup();
+  resetClientStoreForTests();
 });
 
 describe("client page shells", () => {

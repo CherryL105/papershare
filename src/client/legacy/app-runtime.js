@@ -1,5 +1,17 @@
 import * as sharedModule from "../../../shared/papershare-shared.js";
 import temmlModule from "temml";
+import {
+  apiRequest as sharedApiRequest,
+  getClientState,
+  initializeSession as initializeClientSession,
+  login as loginClientUser,
+  logout as logoutClientUser,
+  openPaperDetail as openCatalogPaperDetail,
+  refreshPapers as refreshClientPapers,
+  setPaperSearch as setClientPaperSearch,
+  subscribeClientState,
+  submitPaper as submitClientPaper,
+} from "../shared/client-store.js";
 
 const CONTEXT_RADIUS = 40;
 const DEFAULT_API_ORIGIN = "http://127.0.0.1:3000";
@@ -50,29 +62,30 @@ const IS_DETAIL_PAGE = PAGE_TYPE === "detail";
 const IS_CATALOG_PAGE = PAGE_TYPE === "catalog";
 const LIBRARY_INDEX_PATH = "./index.html";
 const PAPER_DETAIL_PATH = "./paper.html";
+const initialClientState = getClientState();
 
 const state = {
-  isInitializing: true,
-  serverReady: false,
-  currentUser: readStoredCurrentUser(),
+  isInitializing: initialClientState.auth.isInitializing,
+  serverReady: initialClientState.auth.serverReady,
+  currentUser: initialClientState.auth.currentUser,
   currentView: "library",
   libraryPanel: "reader",
   profilePanel: "papers",
   memberProfilePanel: "papers",
-  isLoggingIn: false,
+  isLoggingIn: initialClientState.auth.isLoggingIn,
   isUpdatingUsername: false,
   isChangingPassword: false,
   isCreatingUser: false,
   isManagingUser: false,
   managedUserActionUserId: "",
   managedUserActionType: "",
-  loginStatus: "请输入账号密码",
-  databaseStatus: "服务初始化中...",
-  paperFormStatus: "等待抓取",
+  loginStatus: initialClientState.auth.loginStatus,
+  databaseStatus: initialClientState.auth.databaseStatus,
+  paperFormStatus: initialClientState.catalog.paperFormStatus,
   usernameStatus: "请输入新的用户名",
   passwordStatus: "请输入当前密码和新密码",
   userManagementStatus: "管理员可以创建新的普通用户",
-  papers: [],
+  papers: initialClientState.papers.items,
   myUploadedPapers: [],
   myAnnotations: [],
   receivedReplies: [],
@@ -80,7 +93,7 @@ const state = {
   groupMembers: [],
   selectedMemberId: null,
   selectedMemberProfile: null,
-  searchTerm: "",
+  searchTerm: initialClientState.catalog.searchTerm,
   selectedPaperId: null,
   selectedPaper: null,
   articleLoaded: false,
@@ -95,7 +108,7 @@ const state = {
   discussionNavigationTargetId: null,
   discussions: [],
   readerContextMenu: null,
-  isSavingPaper: false,
+  isSavingPaper: initialClientState.catalog.isSavingPaper,
   isSavingAnnotation: false,
   isSavingReply: false,
   isSavingDiscussion: false,
@@ -309,37 +322,80 @@ const libraryPaneLayout = {
   dragStartX: 0,
   dragStartWidths: null,
 };
+let runtimeStarted = false;
 
-bindEvents();
-initialize();
+export function startCatalogLegacyRuntime() {
+  if (!IS_CATALOG_PAGE) {
+    return;
+  }
+
+  startLegacyRuntime();
+}
+
+export function startDetailLegacyRuntime() {
+  if (!IS_DETAIL_PAGE) {
+    return;
+  }
+
+  startLegacyRuntime();
+}
+
+function startLegacyRuntime() {
+  if (runtimeStarted) {
+    return;
+  }
+
+  runtimeStarted = true;
+  syncStateFromClientStore(getClientState());
+  subscribeClientState(handleClientStateChange);
+  bindEvents();
+  void initialize();
+}
+
+function syncStateFromClientStore(snapshot = getClientState()) {
+  state.isInitializing = snapshot.auth.isInitializing;
+  state.serverReady = snapshot.auth.serverReady;
+  state.currentUser = snapshot.auth.currentUser;
+  state.isLoggingIn = snapshot.auth.isLoggingIn;
+  state.loginStatus = snapshot.auth.loginStatus;
+  state.databaseStatus = snapshot.auth.databaseStatus;
+  state.paperFormStatus = snapshot.catalog.paperFormStatus;
+  state.papers = snapshot.papers.items;
+  state.searchTerm = snapshot.catalog.searchTerm;
+  state.isSavingPaper = snapshot.catalog.isSavingPaper;
+}
+
+function handleClientStateChange(snapshot = getClientState()) {
+  const hadCurrentUser = Boolean(state.currentUser);
+  const hadPasswordChangeRequirement = requiresPasswordChange(state.currentUser);
+
+  syncStateFromClientStore(snapshot);
+
+  if (hadCurrentUser && !state.currentUser) {
+    resetAppForLoggedOutState();
+  }
+
+  if (!hadPasswordChangeRequirement && requiresPasswordChange()) {
+    enterPasswordChangeRequiredState();
+  }
+
+  render();
+}
 
 async function initialize() {
   render();
 
   try {
-    state.serverReady = true;
-    const authState = await apiRequest("/api/auth/me");
+    const authState = await initializeClientSession();
 
     if (authState.authenticated && authState.user) {
-      state.currentUser = authState.user;
-      storeCurrentUser(authState.user);
-      state.loginStatus = `已登录为 ${authState.user.username}`;
       await initializeAuthenticatedApp();
-    } else {
-      clearStoredCurrentUser();
-      state.currentUser = null;
-      state.databaseStatus = "服务已连接，请先登录";
-      state.paperFormStatus = "登录后可抓取文献";
     }
   } catch (error) {
     console.error("Failed to initialize app.", error);
-    state.databaseStatus = `服务未启动（API: ${API_BASE_URL}）`;
-    state.paperFormStatus = "请先启动 server.js";
-    state.loginStatus = "无法连接服务";
-  } finally {
-    state.isInitializing = false;
   }
 
+  syncStateFromClientStore(getClientState());
   render();
 }
 
@@ -361,14 +417,7 @@ function bindEvents() {
   usernameForm?.addEventListener("submit", handleUsernameSubmit);
   passwordBackButton?.addEventListener("click", handlePasswordBackClick);
   userManagementBackButton?.addEventListener("click", handleUserManagementBackClick);
-  paperForm?.addEventListener("submit", handlePaperSubmit);
-  paperSourceUrlInput?.addEventListener("input", render);
-  paperRawHtmlInput?.addEventListener("input", render);
-  openSourceUrlButton?.addEventListener("click", handleOpenSourceUrlClick);
   deletePaperButton?.addEventListener("click", handleDeletePaper);
-  paperSearchInput?.addEventListener("input", handlePaperSearchInput);
-  paperList?.addEventListener("click", handlePaperListClick);
-  paperList?.addEventListener("contextmenu", handlePaperListContextMenu);
   addAnnotationButton?.addEventListener("click", handleAddAnnotation);
   cancelAnnotationButton?.addEventListener("click", handleCancelPendingAnnotation);
   editAnnotationButton?.addEventListener("click", handleEditAnnotation);
@@ -419,6 +468,16 @@ function bindEvents() {
   discussionReplyInput?.addEventListener("input", syncComposerTextareaState);
   backToLibraryButton?.addEventListener("click", handleBackToLibrary);
 
+  if (!IS_CATALOG_PAGE) {
+    paperForm?.addEventListener("submit", handlePaperSubmit);
+    paperSourceUrlInput?.addEventListener("input", render);
+    paperRawHtmlInput?.addEventListener("input", render);
+    openSourceUrlButton?.addEventListener("click", handleOpenSourceUrlClick);
+    paperSearchInput?.addEventListener("input", handlePaperSearchInput);
+    paperList?.addEventListener("click", handlePaperListClick);
+    paperList?.addEventListener("contextmenu", handlePaperListContextMenu);
+  }
+
   for (const handle of [leftPaneResizer, rightPaneResizer]) {
     if (!handle) {
       continue;
@@ -451,21 +510,23 @@ function render() {
 
   renderViewSwitcher();
   renderViews();
-  renderLibraryPanels();
-  renderPaperForm();
-  renderPaperList();
-  renderPaperMeta();
-  renderArticle();
-  renderSelectionPanel();
-  renderReaderContextMenu();
-  renderAnnotationList();
-  renderAnnotationDetail();
-  renderReplyComposer();
-  renderDiscussionComposer();
-  renderDiscussionList();
-  renderDiscussionDetail();
-  renderDiscussionReplyComposer();
-  renderComposerAttachments();
+
+  if (IS_DETAIL_PAGE) {
+    renderLibraryPanels();
+    renderPaperMeta();
+    renderArticle();
+    renderSelectionPanel();
+    renderReaderContextMenu();
+    renderAnnotationList();
+    renderAnnotationDetail();
+    renderReplyComposer();
+    renderDiscussionComposer();
+    renderDiscussionList();
+    renderDiscussionDetail();
+    renderDiscussionReplyComposer();
+    renderComposerAttachments();
+  }
+
   renderProfileSummary();
   renderAccountSettings();
   renderProfilePanels();
@@ -478,20 +539,24 @@ function render() {
   renderMemberProfilePanels();
   renderMemberProfilePaperList();
   renderMemberProfileAnnotationList();
-  if (annotationInput) {
-    syncComposerTextareaState({ currentTarget: annotationInput });
+
+  if (IS_DETAIL_PAGE) {
+    if (annotationInput) {
+      syncComposerTextareaState({ currentTarget: annotationInput });
+    }
+    if (replyInput) {
+      syncComposerTextareaState({ currentTarget: replyInput });
+    }
+    if (discussionInput) {
+      syncComposerTextareaState({ currentTarget: discussionInput });
+    }
+    if (discussionReplyInput) {
+      syncComposerTextareaState({ currentTarget: discussionReplyInput });
+    }
+    flushPendingAnnotationNavigation();
+    flushPendingDiscussionNavigation();
   }
-  if (replyInput) {
-    syncComposerTextareaState({ currentTarget: replyInput });
-  }
-  if (discussionInput) {
-    syncComposerTextareaState({ currentTarget: discussionInput });
-  }
-  if (discussionReplyInput) {
-    syncComposerTextareaState({ currentTarget: discussionReplyInput });
-  }
-  flushPendingAnnotationNavigation();
-  flushPendingDiscussionNavigation();
+
   queueScrollPaneLayout();
 }
 
@@ -2525,15 +2590,6 @@ function resetAppForLoggedOutState() {
   state.usernameStatus = "请输入新的用户名";
   state.passwordStatus = "请输入当前密码和新密码";
   state.userManagementStatus = "管理员可以创建新的普通用户";
-  if (paperSearchInput) {
-    paperSearchInput.value = "";
-  }
-  if (paperSourceUrlInput) {
-    paperSourceUrlInput.value = "";
-  }
-  if (paperRawHtmlInput) {
-    paperRawHtmlInput.value = "";
-  }
   if (annotationInput) {
     annotationInput.value = "";
   }
@@ -2674,16 +2730,8 @@ async function handleLoginSubmit(event) {
   renderAuth();
 
   try {
-    const result = await apiRequest("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    });
-
-    storeSessionToken(result.token || "");
-    state.currentUser = result.user;
-    storeCurrentUser(result.user);
-    state.loginStatus = `已登录为 ${result.user.username}`;
-    loginForm.reset();
+    await loginClientUser({ username, password });
+    loginForm?.reset();
     await initializeAuthenticatedApp();
     render();
   } catch (error) {
@@ -2698,19 +2746,11 @@ async function handleLoginSubmit(event) {
 
 async function handleLogout() {
   try {
-    await apiRequest("/api/auth/logout", {
-      method: "POST",
-    });
+    await logoutClientUser();
   } catch (error) {
     console.error("Failed to logout.", error);
   } finally {
-    clearSessionToken();
-    clearStoredCurrentUser();
-    state.currentUser = null;
-    state.loginStatus = "请输入账号密码";
-    loginForm.reset();
-    resetAppForLoggedOutState();
-    render();
+    loginForm?.reset();
   }
 }
 
@@ -2730,39 +2770,17 @@ async function handlePaperSubmit(event) {
     return;
   }
 
-  state.isSavingPaper = true;
-  state.paperFormStatus = isHtmlImport
-    ? "正在导入源码并写入 storage..."
-    : isElsevierUpload
-      ? "正在通过内置 Elsevier API 获取全文并写入 storage..."
-      : "正在抓取网页并写入 storage...";
-  renderPaperForm();
-
   try {
-    const savedPaper = await apiRequest(isHtmlImport ? "/api/papers/import-html" : "/api/papers", {
-      method: "POST",
-      body: JSON.stringify({
-        sourceUrl,
-        rawHtml,
-      }),
-    });
-
-    state.paperFormStatus = isHtmlImport
-      ? "源码导入成功，已写入 storage"
-      : isElsevierUpload
-        ? "Elsevier 全文导入成功，已写入 storage"
-        : "抓取成功，已写入 storage";
-    paperForm.reset();
+    const savedPaper = await submitClientPaper({ sourceUrl, rawHtml });
+    paperForm?.reset();
     await refreshPapers();
     await refreshMyDashboard();
     await refreshMembersData();
-    await selectPaper(savedPaper.id, { updateHash: !IS_CATALOG_PAGE });
+    openCatalogPaperDetail(savedPaper.id);
   } catch (error) {
     console.error("Failed to fetch paper.", error);
-    state.paperFormStatus = error.message || "抓取失败";
 
     if (!isHtmlImport && shouldOfferBrowserFetchFallback(state.paperFormStatus)) {
-      state.paperFormStatus = "目标站点需要人工验证，请改用浏览器打开原文并导入 HTML 快照";
       paperRawHtmlInput?.focus();
       window.alert(
         [
@@ -2776,9 +2794,6 @@ async function handlePaperSubmit(event) {
     }
 
     window.alert(state.paperFormStatus);
-  } finally {
-    state.isSavingPaper = false;
-    render();
   }
 }
 
@@ -2823,8 +2838,7 @@ function handleOpenSourceUrlClick() {
 }
 
 function handlePaperSearchInput(event) {
-  state.searchTerm = event.target.value.trim().toLowerCase();
-  renderPaperList();
+  setClientPaperSearch(event.target.value);
 }
 
 async function handlePaperListClick(event) {
@@ -2834,7 +2848,7 @@ async function handlePaperListClick(event) {
     return;
   }
 
-  openPaperDetail({ paperId: item.dataset.paperId, panel: "reader" });
+  openCatalogPaperDetail(item.dataset.paperId);
 }
 
 async function handlePaperListContextMenu(event) {
@@ -4520,7 +4534,7 @@ async function refreshPapers() {
     return;
   }
 
-  state.papers = (await apiRequest("/api/papers")).sort(comparePapersForList);
+  state.papers = await refreshClientPapers();
 
   if (state.selectedPaperId) {
     state.selectedPaper =
@@ -6950,65 +6964,7 @@ function clearStoredCurrentUser() {
 }
 
 async function apiRequest(path, options = {}) {
-  const isFormDataBody = options.body instanceof FormData;
-  const requestOptions = {
-    credentials: "include",
-    headers: {
-      ...(isFormDataBody ? {} : { "Content-Type": "application/json" }),
-      ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-      ...(options.headers || {}),
-    },
-    ...options,
-  };
-
-  if (requestOptions.method === "GET" || requestOptions.method === "DELETE" || isFormDataBody) {
-    delete requestOptions.headers["Content-Type"];
-  }
-
-  let response;
-
-  try {
-    response = await fetch(buildApiUrl(path), requestOptions);
-  } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error(
-        `无法连接到 PaperShare 服务，请先运行 server.js，并确认页面能访问 ${API_BASE_URL}`
-      );
-    }
-
-    throw error;
-  }
-
-  const data = await response.json().catch(() => ({}));
-
-  if (response.status === 401) {
-    clearSessionToken();
-    clearStoredCurrentUser();
-    state.currentUser = null;
-    state.loginStatus = data.error || "登录已失效，请重新登录";
-    resetAppForLoggedOutState();
-    render();
-  }
-
-  if (response.status === 403 && data.code === "PASSWORD_CHANGE_REQUIRED") {
-    state.currentUser = {
-      ...(state.currentUser || {}),
-      mustChangePassword: true,
-    };
-    storeCurrentUser(state.currentUser);
-    enterPasswordChangeRequiredState(data.error || "首次登录后请先修改初始密码");
-    render();
-  }
-
-  if (response.ok && data.token) {
-    storeSessionToken(data.token);
-  }
-
-  if (!response.ok) {
-    throw new Error(data.error || `Request failed with status ${response.status}`);
-  }
-
-  return data;
+  return sharedApiRequest(path, options);
 }
 
 function readPaperRouteFromQuery() {
