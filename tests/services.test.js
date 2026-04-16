@@ -318,6 +318,13 @@ function createContainerDeps(overrides = {}) {
       mimeType: String(mimeType || "").trim().toLowerCase() || "text/csv",
     })),
     resolveStorageAbsolutePath: vi.fn((storagePath) => path.join("/tmp/storage", storagePath)),
+    sanitizeAttachmentName: vi.fn((value) =>
+      String(value || "")
+        .trim()
+        .replace(/^.*[\\/]/, "")
+        .replace(/[^\w.\-()\u4e00-\u9fa5 ]+/g, "_")
+        .slice(0, 120)
+    ),
     sendJson: vi.fn(),
     store,
     ...overrides,
@@ -578,6 +585,80 @@ describe("services container", () => {
       message: "当前文献没有网页快照",
       statusCode: 404,
     });
+  });
+
+  it("uses the injected attachment sanitizer when persisting speech attachments", async () => {
+    const deps = createContainerDeps({
+      sanitizeAttachmentName: vi.fn(() => "sanitized name.csv"),
+    });
+    const services = createServices(deps);
+
+    const savedDiscussion = await services.speech.saveDiscussion(
+      "paper-1",
+      {
+        note: "hello",
+        attachments: [
+          {
+            name: " ../unsafe?.csv ",
+            contentBase64: Buffer.from("col1,col2\n1,2\n", "utf8").toString("base64"),
+          },
+        ],
+      },
+      { id: "user-1", username: "admin" }
+    );
+
+    expect(deps.sanitizeAttachmentName).toHaveBeenCalledWith(" ../unsafe?.csv ");
+    expect(savedDiscussion.attachments).toEqual([
+      expect.objectContaining({
+        original_name: "sanitized name.csv",
+      }),
+    ]);
+  });
+
+  it("keeps attachment count and size validation on the lowercase speech-service deps", async () => {
+    const deps = createContainerDeps({
+      MAX_ATTACHMENT_BYTES: 4,
+      MAX_ATTACHMENT_COUNT: 1,
+      MAX_TOTAL_ATTACHMENT_BYTES: 4,
+    });
+    const services = createServices(deps);
+    const currentUser = { id: "user-1", username: "admin" };
+
+    await expect(
+      services.speech.saveDiscussion(
+        "paper-1",
+        {
+          note: "too many",
+          attachments: [
+            {
+              name: "first.csv",
+              contentBase64: Buffer.from("1", "utf8").toString("base64"),
+            },
+            {
+              name: "second.csv",
+              contentBase64: Buffer.from("2", "utf8").toString("base64"),
+            },
+          ],
+        },
+        currentUser
+      )
+    ).rejects.toThrow("单次最多上传 1 个附件");
+
+    await expect(
+      services.speech.saveDiscussion(
+        "paper-1",
+        {
+          note: "too large",
+          attachments: [
+            {
+              name: "large.csv",
+              contentBase64: Buffer.from("12345", "utf8").toString("base64"),
+            },
+          ],
+        },
+        currentUser
+      )
+    ).rejects.toThrow("附件“large.csv”超过 0 MB 限制");
   });
 });
 

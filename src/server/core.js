@@ -710,6 +710,7 @@ function createAppServices() {
     readSpeechMutationBody,
     resolveAttachmentDescriptor,
     resolveStorageAbsolutePath,
+    sanitizeAttachmentName,
     sendJson,
     normalizeStorageRecordPath,
     store: SQLITE_STORE,

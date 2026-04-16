@@ -38,9 +38,6 @@ function createServices(deps) {
     formatLimitInMb: deps.formatLimitInMb,
     fs: deps.fs,
     HttpError: deps.HttpError,
-    MAX_ATTACHMENT_BYTES: deps.MAX_ATTACHMENT_BYTES,
-    MAX_ATTACHMENT_COUNT: deps.MAX_ATTACHMENT_COUNT,
-    MAX_TOTAL_ATTACHMENT_BYTES: deps.MAX_TOTAL_ATTACHMENT_BYTES,
     maxAttachmentBytes: deps.MAX_ATTACHMENT_BYTES,
     maxAttachmentCount: deps.MAX_ATTACHMENT_COUNT,
     maxTotalAttachmentBytes: deps.MAX_TOTAL_ATTACHMENT_BYTES,
@@ -52,6 +49,7 @@ function createServices(deps) {
     readSpeechMutationBody: deps.readSpeechMutationBody,
     resolveAttachmentDescriptor: deps.resolveAttachmentDescriptor,
     resolveStorageAbsolutePath: deps.resolveStorageAbsolutePath,
+    sanitizeAttachmentName: deps.sanitizeAttachmentName,
     store: deps.store,
   });
   const papers = createPapersService({

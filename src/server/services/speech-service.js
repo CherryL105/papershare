@@ -496,7 +496,7 @@ function createSpeechService(deps) {
   }
 
   function parseAttachmentDraft(rawAttachment, index, currentTotalBytes = 0) {
-    const originalName = sanitizeAttachmentName(
+    const originalName = deps.sanitizeAttachmentName(
       rawAttachment?.name || rawAttachment?.original_name || ""
     );
     const contentBase64 = stripBase64Prefix(
@@ -742,19 +742,6 @@ function createSpeechService(deps) {
 
 function stripBase64Prefix(value) {
   return String(value || "").replace(/^data:[^;,]+;base64,/i, "").trim();
-}
-
-function sanitizeAttachmentName(value) {
-  const trimmed = String(value || "").trim();
-
-  if (!trimmed) {
-    return "";
-  }
-
-  return require("path")
-    .basename(trimmed)
-    .replace(/[^\w.\-()\u4e00-\u9fa5 ]+/g, "_")
-    .slice(0, 120);
 }
 
 function dedupeRecordsById(records) {

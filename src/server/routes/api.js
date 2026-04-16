@@ -1,6 +1,16 @@
 function createApiRoutes(services) {
   const { assets, auth, dashboard, http, papers, speech, system, users } = services;
   const decodeParam = (params, key) => decodeURIComponent(params?.[key] || "");
+  const requirePaper = async (paperId, response) => {
+    const paper = await papers.getById(paperId);
+
+    if (!paper) {
+      http.sendJson(response, 404, { error: "文献不存在" });
+      return null;
+    }
+
+    return paper;
+  };
 
   return [
     {
@@ -275,10 +285,7 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ params, response }) => {
         const paperId = decodeParam(params, "paperId");
-        const paper = await papers.getById(paperId);
-
-        if (!paper) {
-          http.sendJson(response, 404, { error: "文献不存在" });
+        if (!(await requirePaper(paperId, response))) {
           return;
         }
 
@@ -292,10 +299,7 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
         const paperId = decodeParam(params, "paperId");
-        const paper = await papers.getById(paperId);
-
-        if (!paper) {
-          http.sendJson(response, 404, { error: "文献不存在" });
+        if (!(await requirePaper(paperId, response))) {
           return;
         }
 
@@ -314,10 +318,7 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
         const paperId = decodeParam(params, "paperId");
-        const paper = await papers.getById(paperId);
-
-        if (!paper) {
-          http.sendJson(response, 404, { error: "文献不存在" });
+        if (!(await requirePaper(paperId, response))) {
           return;
         }
 
@@ -331,10 +332,7 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ params, response }) => {
         const paperId = decodeParam(params, "paperId");
-        const paper = await papers.getById(paperId);
-
-        if (!paper) {
-          http.sendJson(response, 404, { error: "文献不存在" });
+        if (!(await requirePaper(paperId, response))) {
           return;
         }
 
@@ -348,10 +346,7 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
         const paperId = decodeParam(params, "paperId");
-        const paper = await papers.getById(paperId);
-
-        if (!paper) {
-          http.sendJson(response, 404, { error: "文献不存在" });
+        if (!(await requirePaper(paperId, response))) {
           return;
         }
 
@@ -370,10 +365,9 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ params, response }) => {
         const paperId = decodeParam(params, "paperId");
-        const paper = await papers.getById(paperId);
+        const paper = await requirePaper(paperId, response);
 
         if (!paper) {
-          http.sendJson(response, 404, { error: "文献不存在" });
           return;
         }
 
