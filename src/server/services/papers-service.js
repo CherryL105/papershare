@@ -28,6 +28,10 @@ const ELSEVIER_XML_ORDERED_PARSER = new XMLParser({
 });
 
 function createPapersService(deps) {
+  function invalidateDashboard() {
+    deps.dashboardService?.invalidateAll?.();
+  }
+
   async function getById(paperId) {
     const paper = deps.store.papers.getById(paperId);
     return paper ? deps.normalizePaperRecord(paper) : null;
@@ -162,6 +166,7 @@ function createPapersService(deps) {
       repositories.discussions.deleteByPaperId(paperId);
       repositories.papers.deleteById(paperId);
     });
+    invalidateDashboard();
 
     await Promise.all([
       deleteSnapshotByPath(paper.snapshotPath),
@@ -268,6 +273,7 @@ function createPapersService(deps) {
       });
 
       deps.store.papers.insert(nextPaper);
+      invalidateDashboard();
       return nextPaper;
     } catch (error) {
       await deleteSnapshotByPath(snapshotRelativePath);

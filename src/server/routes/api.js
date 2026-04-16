@@ -1,5 +1,6 @@
 function createApiRoutes(services) {
   const { assets, auth, dashboard, http, papers, speech, system, users } = services;
+  const decodeParam = (params, key) => decodeURIComponent(params?.[key] || "");
 
   return [
     {
@@ -24,7 +25,7 @@ function createApiRoutes(services) {
             }
           );
         } catch (error) {
-          http.sendJson(response, 401, { error: error.message || "登录失败" });
+          http.sendError(response, error, "登录失败", 401);
         }
       },
     },
@@ -120,9 +121,7 @@ function createApiRoutes(services) {
           await users.changePassword(currentUser.id, body);
           http.sendJson(response, 200, { ok: true });
         } catch (error) {
-          http.sendJson(response, error.statusCode || 400, {
-            error: error.message || "修改密码失败",
-          });
+          http.sendError(response, error, "修改密码失败");
         }
       },
     },
@@ -136,9 +135,7 @@ function createApiRoutes(services) {
           const user = await users.changeUsername(currentUser.id, body);
           http.sendJson(response, 200, { ok: true, user });
         } catch (error) {
-          http.sendJson(response, error.statusCode || 400, {
-            error: error.message || "修改用户名失败",
-          });
+          http.sendError(response, error, "修改用户名失败");
         }
       },
     },
@@ -153,7 +150,7 @@ function createApiRoutes(services) {
           const user = await users.createMemberUser(body);
           http.sendJson(response, 201, { ok: true, user });
         } catch (error) {
-          http.sendJson(response, error.statusCode || 400, { error: error.message || "创建用户失败" });
+          http.sendError(response, error, "创建用户失败");
         }
       },
     },
@@ -164,7 +161,7 @@ function createApiRoutes(services) {
       handler: async ({ currentUser, params, response }) => {
         try {
           users.assertAdmin(currentUser);
-          const targetUserId = decodeURIComponent(params.userId || "");
+          const targetUserId = decodeParam(params, "userId");
           const result = await users.transferAdminRole(currentUser.id, targetUserId);
           http.sendJson(response, 200, {
             ok: true,
@@ -172,9 +169,7 @@ function createApiRoutes(services) {
             targetUser: result.targetUser,
           });
         } catch (error) {
-          http.sendJson(response, error.statusCode || 400, {
-            error: error.message || "转让管理员失败",
-          });
+          http.sendError(response, error, "转让管理员失败");
         }
       },
     },
@@ -194,12 +189,12 @@ function createApiRoutes(services) {
       handler: async ({ currentUser, params, requestUrl, response }) => {
         try {
           users.assertAdmin(currentUser);
-          const userId = decodeURIComponent(params.userId || "");
+          const userId = decodeParam(params, "userId");
           const purgeContent = requestUrl.searchParams.get("purgeContent") === "1";
           const result = await users.deleteById(currentUser.id, userId, { purgeContent });
           http.sendJson(response, 200, { ok: true, ...result });
         } catch (error) {
-          http.sendJson(response, error.statusCode || 400, { error: error.message || "删除用户失败" });
+          http.sendError(response, error, "删除用户失败");
         }
       },
     },
@@ -208,7 +203,7 @@ function createApiRoutes(services) {
       pattern: "/api/users/:userId/profile",
       requiresAuth: true,
       handler: async ({ params, response }) => {
-        const userId = decodeURIComponent(params.userId || "");
+        const userId = decodeParam(params, "userId");
         const profile = await dashboard.getPublicUserProfile(userId);
         http.sendJson(response, 200, profile);
       },
@@ -239,17 +234,13 @@ function createApiRoutes(services) {
       pattern: "/api/papers",
       requiresAuth: true,
       handler: async ({ currentUser, request, response }) => {
-        const body = await http.readJson(request);
-        const sourceUrl = String(body.sourceUrl || "").trim();
-        const elsevierApiKey = String(body.elsevierApiKey || "").trim();
-
-        if (!sourceUrl) {
-          http.sendJson(response, 400, { error: "缺少 sourceUrl" });
-          return;
+        try {
+          const { sourceUrl, elsevierApiKey } = await http.readPaperRequest(request);
+          const paper = await papers.fetchAndStore(sourceUrl, currentUser, { elsevierApiKey });
+          http.sendJson(response, 201, paper);
+        } catch (error) {
+          http.sendError(response, error, "导入文献失败");
         }
-
-        const paper = await papers.fetchAndStore(sourceUrl, currentUser, { elsevierApiKey });
-        http.sendJson(response, 201, paper);
       },
     },
     {
@@ -257,25 +248,15 @@ function createApiRoutes(services) {
       pattern: "/api/papers/import-html",
       requiresAuth: true,
       handler: async ({ currentUser, request, response }) => {
-        const body = await http.readJson(request);
-        const sourceUrl = String(body.sourceUrl || "").trim();
-        const rawHtml = String(body.rawHtml || "");
-        const elsevierApiKey = String(body.elsevierApiKey || "").trim();
-
-        if (!sourceUrl) {
-          http.sendJson(response, 400, { error: "缺少 sourceUrl" });
-          return;
+        try {
+          const { sourceUrl, rawHtml, elsevierApiKey } = await http.readPaperHtmlImportRequest(request);
+          const paper = await papers.importFromHtml(sourceUrl, rawHtml, currentUser, {
+            elsevierApiKey,
+          });
+          http.sendJson(response, 201, paper);
+        } catch (error) {
+          http.sendError(response, error, "导入 HTML 文献失败");
         }
-
-        if (!rawHtml.trim()) {
-          http.sendJson(response, 400, { error: "缺少 rawHtml" });
-          return;
-        }
-
-        const paper = await papers.importFromHtml(sourceUrl, rawHtml, currentUser, {
-          elsevierApiKey,
-        });
-        http.sendJson(response, 201, paper);
       },
     },
     {
@@ -283,7 +264,7 @@ function createApiRoutes(services) {
       pattern: "/api/papers/:paperId/content",
       requiresAuth: true,
       handler: async ({ params, response }) => {
-        const paperId = decodeURIComponent(params.paperId || "");
+        const paperId = decodeParam(params, "paperId");
         const snapshot = await papers.readSnapshotContent(paperId);
         http.sendJson(response, 200, snapshot);
       },
@@ -293,7 +274,7 @@ function createApiRoutes(services) {
       pattern: "/api/papers/:paperId/annotations",
       requiresAuth: true,
       handler: async ({ params, response }) => {
-        const paperId = decodeURIComponent(params.paperId || "");
+        const paperId = decodeParam(params, "paperId");
         const paper = await papers.getById(paperId);
 
         if (!paper) {
@@ -310,7 +291,7 @@ function createApiRoutes(services) {
       pattern: "/api/papers/:paperId/annotations",
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
-        const paperId = decodeURIComponent(params.paperId || "");
+        const paperId = decodeParam(params, "paperId");
         const paper = await papers.getById(paperId);
 
         if (!paper) {
@@ -318,9 +299,13 @@ function createApiRoutes(services) {
           return;
         }
 
-        const body = await speech.readMutationBody(request);
-        const annotation = await speech.saveAnnotation(paperId, body, currentUser);
-        http.sendJson(response, 201, annotation);
+        try {
+          const body = await speech.readMutationBody(request);
+          const annotation = await speech.saveAnnotation(paperId, body, currentUser);
+          http.sendJson(response, 201, annotation);
+        } catch (error) {
+          http.sendError(response, error, "新增批注失败");
+        }
       },
     },
     {
@@ -328,7 +313,7 @@ function createApiRoutes(services) {
       pattern: "/api/papers/:paperId/annotations",
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
-        const paperId = decodeURIComponent(params.paperId || "");
+        const paperId = decodeParam(params, "paperId");
         const paper = await papers.getById(paperId);
 
         if (!paper) {
@@ -345,7 +330,7 @@ function createApiRoutes(services) {
       pattern: "/api/papers/:paperId/discussions",
       requiresAuth: true,
       handler: async ({ params, response }) => {
-        const paperId = decodeURIComponent(params.paperId || "");
+        const paperId = decodeParam(params, "paperId");
         const paper = await papers.getById(paperId);
 
         if (!paper) {
@@ -362,7 +347,7 @@ function createApiRoutes(services) {
       pattern: "/api/papers/:paperId/discussions",
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
-        const paperId = decodeURIComponent(params.paperId || "");
+        const paperId = decodeParam(params, "paperId");
         const paper = await papers.getById(paperId);
 
         if (!paper) {
@@ -370,9 +355,13 @@ function createApiRoutes(services) {
           return;
         }
 
-        const body = await speech.readMutationBody(request);
-        const discussion = await speech.saveDiscussion(paperId, body, currentUser);
-        http.sendJson(response, 201, discussion);
+        try {
+          const body = await speech.readMutationBody(request);
+          const discussion = await speech.saveDiscussion(paperId, body, currentUser);
+          http.sendJson(response, 201, discussion);
+        } catch (error) {
+          http.sendError(response, error, "新增讨论失败");
+        }
       },
     },
     {
@@ -380,7 +369,7 @@ function createApiRoutes(services) {
       pattern: "/api/papers/:paperId",
       requiresAuth: true,
       handler: async ({ params, response }) => {
-        const paperId = decodeURIComponent(params.paperId || "");
+        const paperId = decodeParam(params, "paperId");
         const paper = await papers.getById(paperId);
 
         if (!paper) {
@@ -396,7 +385,7 @@ function createApiRoutes(services) {
       pattern: "/api/papers/:paperId",
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
-        const paperId = decodeURIComponent(params.paperId || "");
+        const paperId = decodeParam(params, "paperId");
         const result = await papers.deleteById(paperId, currentUser);
         http.sendJson(response, 200, result);
       },
@@ -407,13 +396,12 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
         try {
-          const annotationId = decodeURIComponent(params.annotationId || "");
+          const annotationId = decodeParam(params, "annotationId");
           const body = await speech.readMutationBody(request);
           const reply = await speech.saveAnnotationReply(annotationId, body, currentUser);
           http.sendJson(response, 201, reply);
         } catch (error) {
-          const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 400;
-          http.sendJson(response, statusCode, { error: error.message || "回复批注失败" });
+          http.sendError(response, error, "回复批注失败");
         }
       },
     },
@@ -423,13 +411,12 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
         try {
-          const annotationId = decodeURIComponent(params.annotationId || "");
+          const annotationId = decodeParam(params, "annotationId");
           const body = await speech.readMutationBody(request);
           const annotation = await speech.updateAnnotationById(annotationId, body, currentUser);
           http.sendJson(response, 200, annotation);
         } catch (error) {
-          const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 400;
-          http.sendJson(response, statusCode, { error: error.message || "编辑批注失败" });
+          http.sendError(response, error, "编辑批注失败");
         }
       },
     },
@@ -438,7 +425,7 @@ function createApiRoutes(services) {
       pattern: "/api/annotations/:annotationId",
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
-        const annotationId = decodeURIComponent(params.annotationId || "");
+        const annotationId = decodeParam(params, "annotationId");
         const result = await speech.deleteAnnotationById(annotationId, currentUser);
         http.sendJson(response, 200, result);
       },
@@ -449,13 +436,12 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
         try {
-          const discussionId = decodeURIComponent(params.discussionId || "");
+          const discussionId = decodeParam(params, "discussionId");
           const body = await speech.readMutationBody(request);
           const reply = await speech.saveDiscussionReply(discussionId, body, currentUser);
           http.sendJson(response, 201, reply);
         } catch (error) {
-          const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 400;
-          http.sendJson(response, statusCode, { error: error.message || "回复讨论失败" });
+          http.sendError(response, error, "回复讨论失败");
         }
       },
     },
@@ -465,13 +451,12 @@ function createApiRoutes(services) {
       requiresAuth: true,
       handler: async ({ currentUser, params, request, response }) => {
         try {
-          const discussionId = decodeURIComponent(params.discussionId || "");
+          const discussionId = decodeParam(params, "discussionId");
           const body = await speech.readMutationBody(request);
           const discussion = await speech.updateDiscussionById(discussionId, body, currentUser);
           http.sendJson(response, 200, discussion);
         } catch (error) {
-          const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 400;
-          http.sendJson(response, statusCode, { error: error.message || "编辑讨论失败" });
+          http.sendError(response, error, "编辑讨论失败");
         }
       },
     },
@@ -480,7 +465,7 @@ function createApiRoutes(services) {
       pattern: "/api/discussions/:discussionId",
       requiresAuth: true,
       handler: async ({ currentUser, params, response }) => {
-        const discussionId = decodeURIComponent(params.discussionId || "");
+        const discussionId = decodeParam(params, "discussionId");
         const result = await speech.deleteDiscussionById(discussionId, currentUser);
         http.sendJson(response, 200, result);
       },

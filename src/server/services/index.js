@@ -36,14 +36,6 @@ function createServices(deps) {
     serializeCurrentUser: deps.serializeCurrentUser || deps.serializeUser,
     serializeUser: deps.serializeUser,
   });
-  const users = createUsersService({
-    assertAdminUser: deps.assertAdminUser,
-    changeUserPassword: deps.changeUserPassword,
-    changeUsername: deps.changeUsername,
-    createMemberUser: deps.createMemberUser,
-    deleteUserById: deps.deleteUserById,
-    transferAdminRole: deps.transferAdminRole,
-  });
   const dashboard = createDashboardService({
     HttpError: deps.HttpError,
     normalizeAnnotationRecord: deps.normalizeAnnotationRecord,
@@ -51,6 +43,15 @@ function createServices(deps) {
     normalizePaperRecord: deps.normalizePaperRecord,
     serializeUser: deps.serializeUser,
     store: deps.store,
+  });
+  const users = createUsersService({
+    assertAdminUser: deps.assertAdminUser,
+    changeUserPassword: deps.changeUserPassword,
+    changeUsername: deps.changeUsername,
+    createMemberUser: deps.createMemberUser,
+    dashboardService: dashboard,
+    deleteUserById: deps.deleteUserById,
+    transferAdminRole: deps.transferAdminRole,
   });
   const speech = createSpeechService({
     attachmentsDir: deps.ATTACHMENTS_DIR,
@@ -79,6 +80,7 @@ function createServices(deps) {
   });
   const papers = createPapersService({
     createPaperId: deps.createPaperId,
+    dashboardService: dashboard,
     deleteSpeechAttachmentsForRecords: speech.deleteAttachmentsForRecords,
     enforceSnapshotArticleImagePolicy: deps.enforceSnapshotArticleImagePolicy,
     fs: deps.fs,

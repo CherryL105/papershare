@@ -10,6 +10,8 @@ function createDashboardService(deps) {
   const normalizeAnnotationRecord = deps.normalizeAnnotationRecord || ((value) => value);
   const normalizeDiscussionRecord = deps.normalizeDiscussionRecord || ((value) => value);
   const normalizePaperRecord = deps.normalizePaperRecord || ((value) => value);
+  const dashboardCacheByUserId = new Map();
+  let usersWithStatsCache = null;
 
   async function getForUser(user) {
     const userId = normalizeText(user?.id);
@@ -20,6 +22,12 @@ function createDashboardService(deps) {
         repliesToMyAnnotations: [],
         uploadedPapers: [],
       };
+    }
+
+    const cachedDashboard = dashboardCacheByUserId.get(userId);
+
+    if (cachedDashboard) {
+      return cachedDashboard;
     }
 
     const db = deps.store.getDatabase();
@@ -111,14 +119,21 @@ function createDashboardService(deps) {
     myAnnotations.sort(compareRecordsByActivityDesc("activity_at"));
     repliesToMyAnnotations.sort(compareRecordsByActivityDesc("activity_at"));
 
-    return {
+    const dashboard = {
       myAnnotations,
       repliesToMyAnnotations,
       uploadedPapers,
     };
+
+    dashboardCacheByUserId.set(userId, dashboard);
+    return dashboard;
   }
 
   async function listUsersWithStats() {
+    if (usersWithStatsCache) {
+      return usersWithStatsCache;
+    }
+
     const db = deps.store.getDatabase();
     const users = deps.store.users.listAll();
     const uploadedPaperCountsByUserId = createCountMapFromRows(
@@ -155,13 +170,16 @@ function createDashboardService(deps) {
         .all()
     );
 
-    return users
+    const userStats = users
       .map((user) => ({
         ...deps.serializeUser(user),
         annotationCount: Number(speechCountsByUserId.get(normalizeText(user?.id)) || 0),
         uploadedPaperCount: Number(uploadedPaperCountsByUserId.get(normalizeText(user?.id)) || 0),
       }))
       .sort(compareUsersForDisplay);
+
+    usersWithStatsCache = userStats;
+    return userStats;
   }
 
   async function getPublicUserProfile(userId) {
@@ -180,9 +198,15 @@ function createDashboardService(deps) {
     };
   }
 
+  function invalidateAll() {
+    dashboardCacheByUserId.clear();
+    usersWithStatsCache = null;
+  }
+
   return {
     getForUser,
     getPublicUserProfile,
+    invalidateAll,
     listUsersWithStats,
   };
 }

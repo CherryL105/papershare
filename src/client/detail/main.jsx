@@ -1,4 +1,5 @@
 import { render } from "preact";
+import "../styles.css";
 import { DetailPage } from "./DetailPage.jsx";
 
 const root = document.getElementById("app");

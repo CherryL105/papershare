@@ -20,11 +20,11 @@
 
 ## 二、性能热点
 
-### 3. [已完成] Dashboard 聚合已迁出 `core.js`
+### 3. [已完成] Dashboard 聚合已迁出 `core.js`，并补上轻量查询缓存
 - `getUserDashboard()`、`listUsersWithStats()`、`getPublicUserProfile()` 及其配套 helper 已从 `core.js` 删除，聚合逻辑现在集中在 `src/server/services/dashboard-service.js`。
 - `/api/me/dashboard`、`/api/me/annotations`、`/api/users`、`/api/users/:userId/profile` 保持原响应形状，但 ownership 归属判断已经统一到 `created_by_user_id`。
 - `speech.getAnnotationsByUserId()` 不再依赖旧的 `core.js` dashboard 代理，而是直接复用 dashboard service。
-- 如果 dashboard 后续成为热点 API，下一步再考虑按 `userId + 内容更新时间` 做结果缓存。
+- [已完成] `dashboard-service` 现在对 `getForUser()` 与 `listUsersWithStats()` 做进程内缓存；论文、批注/讨论、用户变更都会通过 `papers/speech/users service` 显式失效，避免同一状态下重复跑整套聚合查询。
 
 ### 4. [已完成] `listWithActivity` SQL 使用冗余列替代相关子查询
 - 首页 papers 列表不再对 annotations/discussions 做 N 个相关子查询聚合，而是直接读取 papers 表上已维护的 `speech_count / latest_speech_at / latest_speaker_username`。
@@ -54,12 +54,12 @@
 ## 四、其它细节
 
 - [已完成] bootstrap 管理员密码已改为通过 `PAPERSHARE_BOOTSTRAP_ADMIN_PASSWORD` 注入，首次创建时若缺失该环境变量会直接启动失败；`users` 表和登录态也新增 `mustChangePassword`，强制 bootstrap 账号先改密再访问其它受保护 API。
-- `readRequestBody` 一类请求解析 helper 里仍有不少重复的 `String(...).trim()` / 错误消息模板，可继续抽取。
+- [已完成] `http-service` 已补上 `readPaperRequest()`、`readPaperHtmlImportRequest()` 与 `sendError()`；`/api/papers`、`/api/papers/import-html`、批注/讨论写接口不再重复手写 `String(...).trim()` 和 `catch -> sendJson` 模板，参数校验错误现在也稳定返回 `400`，不再落到外层 `500`。
 - [已完成] `listByIds` / `papers.listByIdsWithStoredActivity()` 已改为按 900 条分块查询，避免触发 SQLite 999 参数限制。
 - [已完成] React 入口已不再存在双轨：catalog 与 detail 页面都由 Preact 直接挂载，旧的 legacy runtime / raw HTML bridge 已全部移除。
 
 ## 优先级建议（按 ROI）
 
-1. **dashboard 查询缓存**。
-2. **抽取服务端请求解析 helper**，减少 `String(...).trim()` 与错误模板重复。
-3. **如果还想继续压缩服务端复杂度，再拆 `auth/users` 或 `static/storage`**，但这已经是“锦上添花”而不是当前主瓶颈。
+1. **静态资源内存缓存**。
+2. **如果还想继续压缩服务端复杂度，再拆 `auth/users` 或 `static/storage`**，但这已经是“锦上添花”而不是当前主瓶颈。
+3. **如果未来出现多进程部署，再把 dashboard 进程内缓存升级为跨进程可感知的版本键/共享缓存**。

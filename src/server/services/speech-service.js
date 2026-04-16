@@ -8,6 +8,10 @@ const {
 } = require("../../../shared/papershare-shared");
 
 function createSpeechService(deps) {
+  function invalidateDashboard() {
+    deps.dashboardService?.invalidateAll?.();
+  }
+
   async function getAnnotationById(annotationId) {
     const annotation = deps.store.annotations.getById(annotationId);
     return annotation ? deps.normalizeAnnotationRecord(annotation) : null;
@@ -88,6 +92,7 @@ function createSpeechService(deps) {
         repositories.annotations.insert(normalizedAnnotation);
         refreshPaperActivities(repositories, [paperId]);
       });
+      invalidateDashboard();
       return normalizedAnnotation;
     } catch (error) {
       await deleteAttachmentFiles(attachments);
@@ -136,6 +141,7 @@ function createSpeechService(deps) {
         repositories.annotations.insert(nextReply);
         refreshPaperActivities(repositories, [parentAnnotation.paperId]);
       });
+      invalidateDashboard();
       return nextReply;
     } catch (error) {
       await deleteAttachmentFiles(attachments);
@@ -170,6 +176,7 @@ function createSpeechService(deps) {
         repositories.discussions.insert(nextDiscussion);
         refreshPaperActivities(repositories, [paperId]);
       });
+      invalidateDashboard();
       return nextDiscussion;
     } catch (error) {
       await deleteAttachmentFiles(attachments);
@@ -212,6 +219,7 @@ function createSpeechService(deps) {
         repositories.discussions.insert(nextReply);
         refreshPaperActivities(repositories, [parentDiscussion.paperId]);
       });
+      invalidateDashboard();
       return nextReply;
     } catch (error) {
       await deleteAttachmentFiles(attachments);
@@ -256,6 +264,7 @@ function createSpeechService(deps) {
       throw error;
     }
 
+    invalidateDashboard();
     await deleteAttachmentFiles(deletedAttachments);
     return updatedAnnotation;
   }
@@ -297,6 +306,7 @@ function createSpeechService(deps) {
       throw error;
     }
 
+    invalidateDashboard();
     await deleteAttachmentFiles(deletedAttachments);
     return updatedDiscussion;
   }
@@ -334,6 +344,7 @@ function createSpeechService(deps) {
       refreshPaperActivities(repositories, [annotation.paperId]);
     });
 
+    invalidateDashboard();
     await deleteAttachmentsForRecords(deletedRecords);
 
     return {
@@ -378,6 +389,7 @@ function createSpeechService(deps) {
       refreshPaperActivities(repositories, [discussion.paperId]);
     });
 
+    invalidateDashboard();
     await deleteAttachmentsForRecords(deletedRecords);
 
     return {
@@ -452,6 +464,7 @@ function createSpeechService(deps) {
     });
 
     const normalizedDeletedAnnotations = dedupeRecordsById(deletedAnnotations);
+    invalidateDashboard();
     await deleteAttachmentsForRecords(normalizedDeletedAnnotations);
     return normalizedDeletedAnnotations.length;
   }

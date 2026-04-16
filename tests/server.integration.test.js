@@ -1248,11 +1248,16 @@ describe("SQLite migration and API flows", () => {
     expect(homeResponse.headers["cache-control"]).toBe("no-cache");
 
     const assetPath = homeResponse.text.match(/src=\"([^\"]*\/assets\/[^\"]+\.js)\"/)?.[1];
+    const cssAssetPath = homeResponse.text.match(/href=\"([^\"]*\/assets\/[^\"]+\.css)\"/)?.[1];
     expect(assetPath).toBeTruthy();
+    expect(cssAssetPath).toBeTruthy();
 
     const assetResponse = await request(app).get(assetPath);
+    const cssAssetResponse = await request(app).get(cssAssetPath);
     expect(assetResponse.status).toBe(200);
+    expect(cssAssetResponse.status).toBe(200);
     expect(assetResponse.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+    expect(cssAssetResponse.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
   });
 
   it("accepts multipart annotation uploads through the streaming parser", async () => {
@@ -1287,6 +1292,41 @@ describe("SQLite migration and API flows", () => {
     expect(annotationResponse.body.attachments).toHaveLength(1);
     expect(annotationResponse.body.attachments[0].original_name).toBe("table.csv");
     expect(annotationResponse.body.attachments[0].url).toContain("/api/storage/");
+  });
+
+  it("returns 400 for paper import and speech validation errors", async () => {
+    const storageDir = await createStorageDir();
+    const core = await loadCoreForStorage(storageDir);
+    const app = core.createHttpServer();
+    const admin = request.agent(app);
+
+    await loginAs(admin);
+
+    const invalidPaperResponse = await admin.post("/api/papers").send({
+      sourceUrl: "not-a-valid-url",
+    });
+
+    expect(invalidPaperResponse.status).toBe(400);
+    expect(invalidPaperResponse.body.error).toBe("请输入有效的网址");
+
+    const importResponse = await admin.post("/api/papers/import-html").send({
+      rawHtml: createImportHtml("Validation Paper", "Body"),
+      sourceUrl: "https://example.org/papers/validation",
+    });
+    expect(importResponse.status).toBe(201);
+
+    const invalidAnnotationResponse = await admin.post(`/api/papers/${importResponse.body.id}/annotations`).send({
+      exact: "",
+      note: "",
+      prefix: "",
+      suffix: "",
+      target_scope: "body",
+      start_offset: 0,
+      end_offset: 0,
+    });
+
+    expect(invalidAnnotationResponse.status).toBe(400);
+    expect(invalidAnnotationResponse.body.error).toBe("批注内容和附件不能同时为空");
   });
 
   it("imports Nature papers from source links by fetching HTML snapshots", async () => {

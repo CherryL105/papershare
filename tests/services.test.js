@@ -402,6 +402,33 @@ describe("services container", () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain("/content/object/eid/EID-1");
   });
 
+  it("caches dashboard reads and invalidates them after writes", async () => {
+    const deps = createDeps();
+    const services = createServices(deps);
+
+    await services.dashboard.getForUser({ id: "user-1" });
+    await services.dashboard.getForUser({ id: "user-1" });
+
+    expect(deps.store.papers.listByUserId).toHaveBeenCalledTimes(1);
+    expect(deps.store.annotations.listByUserId).toHaveBeenCalledTimes(1);
+    expect(deps.store.discussions.listByUserId).toHaveBeenCalledTimes(1);
+
+    await services.speech.saveDiscussion("paper-1", { note: "cache bust" }, { id: "user-1", username: "admin" });
+    await services.dashboard.getForUser({ id: "user-1" });
+
+    expect(deps.store.papers.listByUserId).toHaveBeenCalledTimes(2);
+    expect(deps.store.annotations.listByUserId).toHaveBeenCalledTimes(2);
+    expect(deps.store.discussions.listByUserId).toHaveBeenCalledTimes(2);
+
+    await services.dashboard.listUsersWithStats();
+    await services.dashboard.listUsersWithStats();
+    expect(deps.store.getDatabase).toHaveBeenCalledTimes(3);
+
+    await services.users.createMemberUser({ username: "member2", password: "pass1234" });
+    await services.dashboard.listUsersWithStats();
+    expect(deps.store.getDatabase).toHaveBeenCalledTimes(4);
+  });
+
   it("raises stable 404s when a paper snapshot cannot be read", async () => {
     const missingPaperDeps = createDeps();
     missingPaperDeps.store.papers.getById = vi.fn(() => null);
