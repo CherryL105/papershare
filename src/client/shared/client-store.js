@@ -29,6 +29,7 @@ const {
   doesRecordBelongToUser,
   getThreadRootAnnotationId,
   getThreadRootDiscussionId,
+  isAdminUser,
   isDiscussionReply,
   isReplyAnnotation,
 } = shared;
@@ -39,6 +40,14 @@ const SESSION_TOKEN_STORAGE_KEY = "papershare_session_token";
 const CURRENT_USER_STORAGE_KEY = "papershare_current_user";
 const LIBRARY_INDEX_PATH = "./index.html";
 const PAPER_DETAIL_PATH = "./paper.html";
+
+const CATALOG_VIEWS = Object.freeze({
+  library: "library",
+  members: "members",
+  password: "password",
+  profile: "profile",
+  userManagement: "user-management",
+});
 
 const listeners = new Set();
 let navigateToUrl = defaultNavigateToUrl;
@@ -102,9 +111,11 @@ export async function initializeSession() {
           items: [],
         },
         catalog: {
+          ...createInitialCatalogState(null),
           paperFormStatus: "登录后可抓取文献",
-          searchTerm: "",
         },
+        profile: createInitialProfileState(),
+        members: createInitialMembersState(),
         detail: createInitialDetailState(),
       });
     }
@@ -120,8 +131,11 @@ export async function initializeSession() {
         items: [],
       },
       catalog: {
+        ...createInitialCatalogState(null),
         paperFormStatus: "请先启动 server.js",
       },
+      profile: createInitialProfileState(),
+      members: createInitialMembersState(),
       detail: createInitialDetailState(),
     });
     throw error;
@@ -270,6 +284,56 @@ export async function submitPaper({ sourceUrl, rawHtml }) {
   }
 }
 
+export async function initializeCatalogPage(options = {}) {
+  const authState = options.skipSessionInit
+    ? {
+        authenticated: Boolean(clientState.auth.currentUser),
+        user: clientState.auth.currentUser,
+      }
+    : await initializeSession();
+
+  if (!authState.authenticated || !authState.user) {
+    updateClientState({
+      catalog: {
+        currentView: CATALOG_VIEWS.library,
+      },
+      profile: createInitialProfileState(),
+      members: createInitialMembersState(),
+    });
+    return authState;
+  }
+
+  if (requiresPasswordChange(authState.user)) {
+    enterPasswordChangeRequiredState(authState.user);
+    return authState;
+  }
+
+  await apiRequest("/api/status");
+  updateClientState({
+    auth: {
+      serverReady: true,
+      databaseStatus: "服务已连接",
+    },
+    catalog: {
+      currentView: normalizeCatalogView(clientState.catalog.currentView, authState.user),
+      paperFormStatus: "等待抓取",
+    },
+    profile: {
+      usernameStatus: "请输入新的用户名",
+      passwordStatus: "请输入当前密码和新密码",
+    },
+    members: {
+      userManagementStatus: "管理员可以创建新的普通用户",
+    },
+  });
+
+  await refreshPapers();
+  await refreshDashboard();
+  await refreshMembersData();
+
+  return authState;
+}
+
 export async function initializeDetailPage(options = {}) {
   updateClientState({
     detail: {
@@ -289,6 +353,11 @@ export async function initializeDetailPage(options = {}) {
       updateClientState({
         detail: createInitialDetailState(),
       });
+      return authState;
+    }
+
+    if (requiresPasswordChange(authState.user)) {
+      enterPasswordChangeRequiredState(authState.user);
       return authState;
     }
 
@@ -512,6 +581,653 @@ export async function refreshSelectedPaperDiscussions() {
   });
 
   return sortedDiscussions;
+}
+
+export async function refreshDashboard() {
+  if (!clientState.auth.currentUser) {
+    updateClientState({
+      profile: {
+        uploadedPapers: [],
+        myAnnotations: [],
+        repliesToMyAnnotations: [],
+      },
+    });
+    return {
+      myAnnotations: [],
+      repliesToMyAnnotations: [],
+      uploadedPapers: [],
+    };
+  }
+
+  const dashboard = await apiRequest("/api/me/dashboard");
+
+  updateClientState({
+    profile: {
+      uploadedPapers: dashboard.uploadedPapers || [],
+      myAnnotations: dashboard.myAnnotations || [],
+      repliesToMyAnnotations: dashboard.repliesToMyAnnotations || [],
+    },
+  });
+
+  return dashboard;
+}
+
+export async function refreshMembers() {
+  if (!clientState.auth.currentUser) {
+    updateClientState({
+      members: createInitialMembersState(),
+    });
+    return [];
+  }
+
+  const users = await apiRequest("/api/users");
+  const groupMembers = users.filter((user) => user.id !== clientState.auth.currentUser.id);
+  const nextSelectedMemberId = groupMembers.some(
+    (member) => member.id === clientState.members.selectedMemberId
+  )
+    ? clientState.members.selectedMemberId
+    : groupMembers[0]?.id || "";
+  const shouldKeepSelectedProfile =
+    clientState.members.selectedMemberProfile?.user?.id === nextSelectedMemberId;
+
+  updateClientState({
+    members: {
+      allUsers: users,
+      groupMembers,
+      selectedMemberId: nextSelectedMemberId,
+      selectedMemberProfile: shouldKeepSelectedProfile
+        ? clientState.members.selectedMemberProfile
+        : null,
+    },
+  });
+
+  return groupMembers;
+}
+
+export async function refreshSelectedMemberProfile() {
+  if (!clientState.auth.currentUser || !clientState.members.selectedMemberId) {
+    updateClientState({
+      members: {
+        selectedMemberProfile: null,
+      },
+    });
+    return null;
+  }
+
+  const selectedMemberId = clientState.members.selectedMemberId;
+  const profile = await apiRequest(`/api/users/${encodeURIComponent(selectedMemberId)}/profile`);
+
+  if (clientState.members.selectedMemberId !== selectedMemberId) {
+    return null;
+  }
+
+  updateClientState({
+    members: {
+      selectedMemberProfile: profile,
+    },
+  });
+
+  return profile;
+}
+
+export async function selectMember(memberId) {
+  const normalizedMemberId = String(memberId || "").trim();
+
+  if (!clientState.auth.currentUser) {
+    return null;
+  }
+
+  if (!normalizedMemberId) {
+    updateClientState({
+      members: {
+        selectedMemberId: "",
+        selectedMemberProfile: null,
+      },
+    });
+    return null;
+  }
+
+  if (!clientState.members.groupMembers.some((member) => member.id === normalizedMemberId)) {
+    return null;
+  }
+
+  if (
+    clientState.members.selectedMemberId === normalizedMemberId &&
+    clientState.members.selectedMemberProfile
+  ) {
+    return clientState.members.selectedMemberProfile;
+  }
+
+  updateClientState({
+    catalog: {
+      memberProfilePanel: "papers",
+    },
+    members: {
+      selectedMemberId: normalizedMemberId,
+      selectedMemberProfile: null,
+    },
+  });
+
+  return refreshSelectedMemberProfile();
+}
+
+export async function setCatalogView(viewName) {
+  const currentUser = clientState.auth.currentUser;
+
+  if (!currentUser) {
+    return clientState.catalog.currentView;
+  }
+
+  const nextView = normalizeCatalogView(viewName, currentUser);
+
+  if (clientState.catalog.currentView === nextView) {
+    if (
+      nextView === CATALOG_VIEWS.members &&
+      clientState.members.selectedMemberId &&
+      !clientState.members.selectedMemberProfile
+    ) {
+      await refreshSelectedMemberProfile();
+    }
+
+    return nextView;
+  }
+
+  updateClientState({
+    catalog: {
+      currentView: nextView,
+    },
+  });
+
+  if (
+    nextView === CATALOG_VIEWS.members &&
+    clientState.members.selectedMemberId &&
+    !clientState.members.selectedMemberProfile
+  ) {
+    await refreshSelectedMemberProfile();
+  }
+
+  return nextView;
+}
+
+export function setProfilePanel(panelName) {
+  if (!clientState.auth.currentUser) {
+    return;
+  }
+
+  updateClientState({
+    catalog: {
+      profilePanel: panelName === "speeches" || panelName === "replies" ? panelName : "papers",
+    },
+  });
+}
+
+export function setMemberProfilePanel(panelName) {
+  if (!clientState.auth.currentUser) {
+    return;
+  }
+
+  updateClientState({
+    catalog: {
+      memberProfilePanel: panelName === "speeches" ? "speeches" : "papers",
+    },
+  });
+}
+
+export async function changeUsername({ username }) {
+  const currentUser = clientState.auth.currentUser;
+  const nextUsername = String(username || "").trim();
+
+  if (!currentUser || clientState.profile.isUpdatingUsername || requiresPasswordChange(currentUser)) {
+    return null;
+  }
+
+  if (!nextUsername) {
+    updateClientState({
+      profile: {
+        usernameStatus: "请输入新的用户名",
+      },
+    });
+    return null;
+  }
+
+  if (nextUsername === currentUser.username) {
+    updateClientState({
+      profile: {
+        usernameStatus: "新用户名不能与当前用户名相同",
+      },
+    });
+    return null;
+  }
+
+  updateClientState({
+    profile: {
+      isUpdatingUsername: true,
+      usernameStatus: "正在更新用户名...",
+    },
+  });
+
+  try {
+    const result = await apiRequest("/api/me/username", {
+      method: "POST",
+      body: JSON.stringify({
+        username: nextUsername,
+      }),
+    });
+    const nextUser = result.user || currentUser;
+
+    persistCurrentUser(nextUser);
+    updateClientState({
+      auth: {
+        currentUser: nextUser,
+        loginStatus: `已登录为 ${nextUser.username}`,
+      },
+    });
+
+    await refreshPapers();
+    await refreshDashboard();
+    await refreshMembersData();
+
+    if (clientState.detail.selectedPaperId) {
+      await refreshSelectedPaperAnnotations();
+      await refreshSelectedPaperDiscussions();
+    }
+
+    updateClientState({
+      profile: {
+        usernameStatus: "用户名更新成功",
+      },
+    });
+
+    return nextUser;
+  } catch (error) {
+    updateClientState({
+      profile: {
+        usernameStatus: error.message || "修改用户名失败",
+      },
+    });
+    throw error;
+  } finally {
+    updateClientState({
+      profile: {
+        isUpdatingUsername: false,
+      },
+    });
+  }
+}
+
+export async function changePassword({ confirmPassword, currentPassword, nextPassword }) {
+  const currentUser = clientState.auth.currentUser;
+
+  if (!currentUser || clientState.profile.isChangingPassword) {
+    return null;
+  }
+
+  if (!currentPassword || !nextPassword || !confirmPassword) {
+    updateClientState({
+      profile: {
+        passwordStatus: "请完整填写三个密码字段",
+      },
+    });
+    return null;
+  }
+
+  if (nextPassword !== confirmPassword) {
+    updateClientState({
+      profile: {
+        passwordStatus: "两次输入的新密码不一致",
+      },
+    });
+    return null;
+  }
+
+  const wasPasswordChangeRequired = requiresPasswordChange(currentUser);
+
+  updateClientState({
+    profile: {
+      isChangingPassword: true,
+      passwordStatus: "正在更新密码...",
+    },
+  });
+
+  try {
+    await apiRequest("/api/me/password", {
+      method: "POST",
+      body: JSON.stringify({
+        currentPassword,
+        nextPassword,
+      }),
+    });
+
+    const authState = await apiRequest("/api/auth/me");
+
+    if (authState.authenticated && authState.user) {
+      applyAuthenticatedState(authState.user, `已登录为 ${authState.user.username}`);
+    }
+
+    await initializeCatalogPage({ skipSessionInit: true });
+
+    updateClientState({
+      catalog: {
+        currentView: wasPasswordChangeRequired
+          ? CATALOG_VIEWS.profile
+          : clientState.catalog.currentView,
+      },
+      profile: {
+        passwordStatus: "密码更新成功",
+      },
+    });
+
+    return authState.user || null;
+  } catch (error) {
+    updateClientState({
+      profile: {
+        passwordStatus: error.message || "修改密码失败",
+      },
+    });
+    throw error;
+  } finally {
+    updateClientState({
+      profile: {
+        isChangingPassword: false,
+      },
+    });
+  }
+}
+
+export async function createUser({ confirmPassword, password, username }) {
+  const currentUser = clientState.auth.currentUser;
+  const normalizedUsername = String(username || "").trim();
+  const normalizedPassword = String(password || "");
+  const normalizedConfirmPassword = String(confirmPassword || "");
+
+  if (!currentUser || !isCurrentUserAdmin(currentUser) || clientState.members.isCreatingUser) {
+    return null;
+  }
+
+  if (!normalizedUsername || !normalizedPassword || !normalizedConfirmPassword) {
+    updateClientState({
+      members: {
+        userManagementStatus: "请完整填写用户名和两次密码",
+      },
+    });
+    return null;
+  }
+
+  if (normalizedPassword !== normalizedConfirmPassword) {
+    updateClientState({
+      members: {
+        userManagementStatus: "两次输入的初始密码不一致",
+      },
+    });
+    return null;
+  }
+
+  updateClientState({
+    members: {
+      isCreatingUser: true,
+      userManagementStatus: "正在创建用户...",
+    },
+  });
+
+  try {
+    const result = await apiRequest("/api/users", {
+      method: "POST",
+      body: JSON.stringify({
+        username: normalizedUsername,
+        password: normalizedPassword,
+      }),
+    });
+
+    await refreshMembersData();
+
+    updateClientState({
+      members: {
+        userManagementStatus: `用户 ${normalizedUsername} 创建成功`,
+      },
+    });
+
+    return result.user || null;
+  } catch (error) {
+    updateClientState({
+      members: {
+        userManagementStatus: error.message || "创建用户失败",
+      },
+    });
+    throw error;
+  } finally {
+    updateClientState({
+      members: {
+        isCreatingUser: false,
+      },
+    });
+  }
+}
+
+export async function deleteUser({ purgeContent = false, userId }) {
+  const currentUser = clientState.auth.currentUser;
+  const normalizedUserId = String(userId || "").trim();
+
+  if (!currentUser || !isCurrentUserAdmin(currentUser) || clientState.members.isManagingUser) {
+    return null;
+  }
+
+  const targetUser =
+    clientState.members.allUsers.find((user) => user.id === normalizedUserId) || null;
+
+  if (!targetUser) {
+    throw new Error("要删除的用户不存在。");
+  }
+
+  updateClientState({
+    members: {
+      isManagingUser: true,
+      managedUserActionUserId: normalizedUserId,
+      managedUserActionType: "delete",
+      userManagementStatus: purgeContent
+        ? `正在删除用户 ${targetUser.username}，并清理其历史上传和发言...`
+        : `正在删除用户 ${targetUser.username}...`,
+    },
+  });
+
+  try {
+    const result = await apiRequest(
+      `/api/users/${encodeURIComponent(normalizedUserId)}${purgeContent ? "?purgeContent=1" : ""}`,
+      {
+        method: "DELETE",
+      }
+    );
+
+    if (purgeContent) {
+      await refreshPapers();
+      await refreshDashboard();
+
+      if (clientState.detail.selectedPaperId) {
+        if (clientState.papers.items.some((paper) => paper.id === clientState.detail.selectedPaperId)) {
+          await refreshSelectedPaperAnnotations();
+          await refreshSelectedPaperDiscussions();
+        } else {
+          clearSelectedDetailPaper();
+        }
+      }
+    }
+
+    await refreshMembersData();
+
+    updateClientState({
+      members: {
+        userManagementStatus: purgeContent
+          ? `用户 ${targetUser.username} 已删除，同时清理了 ${
+              Number(result?.deletedContent?.paperCount || 0)
+            } 篇上传及相关的 ${Number(result?.deletedContent?.annotationCount || 0)} 条批注和 ${
+              Number(result?.deletedContent?.discussionCount || 0)
+            } 条讨论`
+          : `用户 ${targetUser.username} 已删除，历史上传和发言已保留`,
+      },
+    });
+
+    return result;
+  } catch (error) {
+    updateClientState({
+      members: {
+        userManagementStatus: error.message || "删除用户失败",
+      },
+    });
+    throw error;
+  } finally {
+    updateClientState({
+      members: {
+        isManagingUser: false,
+        managedUserActionUserId: "",
+        managedUserActionType: "",
+      },
+    });
+  }
+}
+
+export async function transferAdmin(userId) {
+  const currentUser = clientState.auth.currentUser;
+  const normalizedUserId = String(userId || "").trim();
+
+  if (!currentUser || !isCurrentUserAdmin(currentUser) || clientState.members.isManagingUser) {
+    return null;
+  }
+
+  const targetUser =
+    clientState.members.allUsers.find((user) => user.id === normalizedUserId) || null;
+
+  if (!targetUser) {
+    throw new Error("要转让的目标用户不存在。");
+  }
+
+  updateClientState({
+    members: {
+      isManagingUser: true,
+      managedUserActionUserId: normalizedUserId,
+      managedUserActionType: "transfer",
+      userManagementStatus: `正在将管理员身份转让给 ${targetUser.username}...`,
+    },
+  });
+
+  try {
+    const result = await apiRequest(`/api/users/${encodeURIComponent(normalizedUserId)}/transfer-admin`, {
+      method: "POST",
+    });
+
+    if (result.currentUser) {
+      persistCurrentUser(result.currentUser);
+      updateClientState({
+        auth: {
+          currentUser: result.currentUser,
+          loginStatus: `已登录为 ${result.currentUser.username}`,
+        },
+      });
+    }
+
+    await refreshDashboard();
+    await refreshMembersData();
+
+    updateClientState({
+      catalog: {
+        currentView: CATALOG_VIEWS.profile,
+      },
+      members: {
+        userManagementStatus: `管理员身份已转让给 ${targetUser.username}`,
+      },
+    });
+
+    return result;
+  } catch (error) {
+    updateClientState({
+      members: {
+        userManagementStatus: error.message || "转让管理员失败",
+      },
+    });
+    throw error;
+  } finally {
+    updateClientState({
+      members: {
+        isManagingUser: false,
+        managedUserActionUserId: "",
+        managedUserActionType: "",
+      },
+    });
+  }
+}
+
+export async function deletePaperById(paperId) {
+  const currentUser = clientState.auth.currentUser;
+  const paper = clientState.papers.items.find((item) => item.id === paperId) || null;
+
+  if (!currentUser || !paper) {
+    return null;
+  }
+
+  if (!canDeleteOwnedRecord(paper, currentUser)) {
+    throw new Error("你只能删除自己上传的文献，管理员 admin 可删除任意文献。");
+  }
+
+  const nextPaperId = getNextPaperIdAfterDeletion(paper.id);
+
+  await apiRequest(`/api/papers/${encodeURIComponent(paper.id)}`, {
+    method: "DELETE",
+  });
+
+  await refreshPapers();
+  await refreshDashboard();
+  await refreshMembersData();
+
+  updateClientState({
+    catalog: {
+      paperFormStatus: "文献已删除",
+    },
+  });
+
+  if (clientState.detail.selectedPaperId === paper.id) {
+    if (nextPaperId && clientState.papers.items.some((item) => item.id === nextPaperId)) {
+      await selectPaper(nextPaperId);
+    } else {
+      clearSelectedDetailPaper();
+    }
+  }
+
+  return paper;
+}
+
+export async function deleteActivity(record) {
+  const currentUser = clientState.auth.currentUser;
+  const speechType = record?.speech_type === "discussion" ? "discussion" : "annotation";
+  const apiBasePath = speechType === "discussion" ? "/api/discussions" : "/api/annotations";
+
+  if (!currentUser || !record?.id) {
+    return null;
+  }
+
+  if (!canDeleteOwnedRecord(record, currentUser)) {
+    throw new Error(
+      speechType === "discussion"
+        ? Boolean(record.is_reply)
+          ? "无权删除该回复"
+          : "无权删除该讨论"
+        : Boolean(record.is_reply)
+          ? "无权删除该回复"
+          : "无权删除该批注"
+    );
+  }
+
+  await apiRequest(`${apiBasePath}/${encodeURIComponent(record.id)}`, {
+    method: "DELETE",
+  });
+
+  await refreshPapers();
+  await refreshDashboard();
+  await refreshMembersData();
+
+  if (clientState.detail.selectedPaperId && clientState.detail.selectedPaperId === record.paperId) {
+    await refreshSelectedPaperAnnotations();
+    await refreshSelectedPaperDiscussions();
+  }
+
+  return record;
 }
 
 export function setLibraryPanel(panelName) {
@@ -1251,15 +1967,7 @@ export async function apiRequest(path, options = {}) {
       mustChangePassword: true,
     };
 
-    persistCurrentUser(nextUser);
-    updateClientState({
-      auth: {
-        currentUser: nextUser,
-      },
-      catalog: {
-        paperFormStatus: "修改密码后可抓取文献",
-      },
-    });
+    enterPasswordChangeRequiredState(nextUser);
   }
 
   if (response.ok && data.token) {
@@ -1313,12 +2021,47 @@ function createInitialClientState() {
     papers: {
       items: [],
     },
-    catalog: {
-      paperFormStatus: "等待抓取",
-      searchTerm: "",
-      isSavingPaper: false,
-    },
+    catalog: createInitialCatalogState(currentUser),
+    profile: createInitialProfileState(),
+    members: createInitialMembersState(),
     detail: createInitialDetailState(),
+  };
+}
+
+function createInitialCatalogState(currentUser = null) {
+  return {
+    currentView: requiresPasswordChange(currentUser) ? CATALOG_VIEWS.password : CATALOG_VIEWS.library,
+    profilePanel: "papers",
+    memberProfilePanel: "papers",
+    paperFormStatus: requiresPasswordChange(currentUser) ? "修改密码后可抓取文献" : "等待抓取",
+    searchTerm: "",
+    isSavingPaper: false,
+  };
+}
+
+function createInitialProfileState() {
+  return {
+    uploadedPapers: [],
+    myAnnotations: [],
+    repliesToMyAnnotations: [],
+    usernameStatus: "请输入新的用户名",
+    passwordStatus: "请输入当前密码和新密码",
+    isUpdatingUsername: false,
+    isChangingPassword: false,
+  };
+}
+
+function createInitialMembersState() {
+  return {
+    allUsers: [],
+    groupMembers: [],
+    selectedMemberId: "",
+    selectedMemberProfile: null,
+    userManagementStatus: "管理员可以创建新的普通用户",
+    isCreatingUser: false,
+    isManagingUser: false,
+    managedUserActionUserId: "",
+    managedUserActionType: "",
   };
 }
 
@@ -1377,6 +2120,12 @@ function mergeClientState(baseState, partialState = {}) {
     catalog: partialState.catalog
       ? { ...baseState.catalog, ...partialState.catalog }
       : baseState.catalog,
+    profile: partialState.profile
+      ? { ...baseState.profile, ...partialState.profile }
+      : baseState.profile,
+    members: partialState.members
+      ? { ...baseState.members, ...partialState.members }
+      : baseState.members,
     detail: partialState.detail ? mergeDetailState(baseState.detail, partialState.detail) : baseState.detail,
   };
 }
@@ -1416,9 +2165,10 @@ function applyAuthenticatedState(user, loginStatus) {
       currentUser: user,
       serverReady: true,
       loginStatus,
-      databaseStatus: "服务已连接",
+      databaseStatus: requiresPasswordChange(user) ? "已登录，需先修改初始密码" : "服务已连接",
     },
     catalog: {
+      currentView: normalizeCatalogView(clientState.catalog.currentView, user),
       paperFormStatus: user?.mustChangePassword ? "修改密码后可抓取文献" : "等待抓取",
     },
   });
@@ -1439,10 +2189,12 @@ function applyLoggedOutState(loginStatus) {
       items: [],
     },
     catalog: {
+      ...createInitialCatalogState(null),
       isSavingPaper: false,
       paperFormStatus: clientState.auth.serverReady ? "登录后可抓取文献" : "请先启动 server.js",
-      searchTerm: "",
     },
+    profile: createInitialProfileState(),
+    members: createInitialMembersState(),
     detail: createInitialDetailState(),
   });
 }
@@ -1678,6 +2430,115 @@ function matchesPaperSearchTerm(paper, searchTerm) {
       .toLowerCase()
       .includes(searchTerm)
   );
+}
+
+async function refreshMembersData() {
+  await refreshMembers();
+
+  if (!clientState.members.selectedMemberId) {
+    updateClientState({
+      members: {
+        selectedMemberProfile: null,
+      },
+    });
+    return null;
+  }
+
+  return refreshSelectedMemberProfile();
+}
+
+function normalizeCatalogView(viewName, user = clientState.auth.currentUser) {
+  if (!user) {
+    return CATALOG_VIEWS.library;
+  }
+
+  if (requiresPasswordChange(user)) {
+    return CATALOG_VIEWS.password;
+  }
+
+  if (viewName === CATALOG_VIEWS.members) {
+    return CATALOG_VIEWS.members;
+  }
+
+  if (viewName === CATALOG_VIEWS.profile) {
+    return CATALOG_VIEWS.profile;
+  }
+
+  if (viewName === CATALOG_VIEWS.password) {
+    return CATALOG_VIEWS.password;
+  }
+
+  if (viewName === CATALOG_VIEWS.userManagement) {
+    return isCurrentUserAdmin(user) ? CATALOG_VIEWS.userManagement : CATALOG_VIEWS.profile;
+  }
+
+  return CATALOG_VIEWS.library;
+}
+
+function requiresPasswordChange(user = clientState.auth.currentUser) {
+  return Boolean(user?.mustChangePassword);
+}
+
+function isCurrentUserAdmin(user = clientState.auth.currentUser) {
+  return isAdminUser(user);
+}
+
+function enterPasswordChangeRequiredState(user) {
+  const nextUser = user
+    ? {
+        ...user,
+        mustChangePassword: true,
+      }
+    : {
+        ...(clientState.auth.currentUser || {}),
+        mustChangePassword: true,
+      };
+
+  persistCurrentUser(nextUser);
+  updateClientState({
+    auth: {
+      currentUser: nextUser,
+      databaseStatus: "已登录，需先修改初始密码",
+    },
+    papers: {
+      items: [],
+    },
+    catalog: {
+      currentView: CATALOG_VIEWS.password,
+      paperFormStatus: "修改密码后可抓取文献",
+    },
+    profile: {
+      ...createInitialProfileState(),
+      usernameStatus: "首次改密完成前，用户名暂时不可修改",
+      passwordStatus: "首次登录后请先修改初始密码",
+    },
+    members: {
+      ...createInitialMembersState(),
+      userManagementStatus: "首次改密完成前，用户管理功能暂不可用",
+    },
+    detail: createInitialDetailState(),
+  });
+}
+
+function clearSelectedDetailPaper() {
+  writePaperIdToHash("");
+  updateClientState({
+    detail: {
+      ...createInitialDetailState(),
+      libraryPanel: clientState.detail.libraryPanel,
+    },
+  });
+}
+
+function getNextPaperIdAfterDeletion(paperId) {
+  const papers = clientState.papers.items;
+  const currentIndex = papers.findIndex((paper) => paper.id === paperId);
+
+  if (currentIndex === -1) {
+    return "";
+  }
+
+  return papers[currentIndex + 1]?.id || papers[currentIndex - 1]?.id || "";
 }
 
 function resolveApiBaseUrl() {

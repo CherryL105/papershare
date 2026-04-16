@@ -11,11 +11,11 @@ import {
   useClientState,
 } from "../shared/client-store.js";
 
-export function CatalogLibraryView() {
+export function CatalogLibraryView({ hidden = false }) {
   const snapshot = useClientState();
 
   return (
-    <section id="library-view" className="content-grid is-catalog">
+    <section id="library-view" className={`content-grid is-catalog${hidden ? " is-hidden" : ""}`}>
       <CatalogUploadPanel snapshot={snapshot} />
 
       <button

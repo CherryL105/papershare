@@ -1,10 +1,15 @@
 export function AppHeader({
   authControlsHidden = true,
+  currentView = "library",
   currentUserLabel = "",
   databaseStatus = "服务初始化中...",
+  isPasswordChangeRequired = false,
   onLogout,
+  onViewChange,
   showViewSwitcher = false,
 }) {
+  const isViewSwitcherHidden = authControlsHidden;
+
   return (
     <section className="page-header">
       <div className="top-bar">
@@ -31,14 +36,32 @@ export function AppHeader({
 
       {showViewSwitcher ? (
         <header className="top-bar">
-          <div id="view-switcher" className="view-switcher is-hidden">
-            <button id="library-view-button" className="view-switch-button active" type="button">
+          <div id="view-switcher" className={`view-switcher${isViewSwitcherHidden ? " is-hidden" : ""}`}>
+            <button
+              id="library-view-button"
+              className={`view-switch-button${currentView === "library" ? " active" : ""}`}
+              type="button"
+              disabled={authControlsHidden || isPasswordChangeRequired}
+              onClick={() => onViewChange?.("library")}
+            >
               文章与讨论
             </button>
-            <button id="profile-view-button" className="view-switch-button" type="button">
+            <button
+              id="profile-view-button"
+              className={`view-switch-button${currentView === "profile" ? " active" : ""}`}
+              type="button"
+              disabled={authControlsHidden || isPasswordChangeRequired}
+              onClick={() => onViewChange?.("profile")}
+            >
               个人中心
             </button>
-            <button id="member-view-button" className="view-switch-button" type="button">
+            <button
+              id="member-view-button"
+              className={`view-switch-button${currentView === "members" ? " active" : ""}`}
+              type="button"
+              disabled={authControlsHidden || isPasswordChangeRequired}
+              onClick={() => onViewChange?.("members")}
+            >
               组员动向
             </button>
           </div>
