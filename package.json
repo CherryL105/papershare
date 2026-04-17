@@ -12,10 +12,11 @@
     "url": "https://github.com/CherryL105/papershare/issues"
   },
   "scripts": {
-    "build": "vite build",
+    "build": "tsc && vite build",
     "dev": "concurrently \"node server.js\" \"vite\"",
     "start": "node server.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
@@ -26,10 +27,17 @@
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.10.5",
+    "@tailwindcss/postcss": "^4.2.2",
     "@testing-library/preact": "^3.2.4",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.6.0",
+    "autoprefixer": "^10.5.0",
     "concurrently": "^9.2.1",
     "jsdom": "^29.0.2",
+    "postcss": "^8.5.10",
     "supertest": "^7.2.2",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^6.0.2",
     "vite": "^8.0.8",
     "vitest": "^4.1.4",
     "zimmerframe": "^1.1.4"

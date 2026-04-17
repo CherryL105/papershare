@@ -12,6 +12,29 @@ module.exports = defineConfig({
         index: path.resolve(__dirname, "src/client/catalog/index.html"),
         paper: path.resolve(__dirname, "src/client/detail/paper.html"),
       },
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (id.includes("temml")) {
+              return "vendor-temml";
+            }
+            if (id.includes("preact")) {
+              return "vendor-preact";
+            }
+            // General vendor chunk for other small libraries
+            return "vendors";
+          }
+          
+          // Separate shared client code from specific page logic
+          if (id.includes("src/client/shared")) {
+            return "client-shared";
+          }
+
+          if (id.includes("src/client/detail/detail-store")) {
+            return "detail-runtime";
+          }
+        },
+      },
     },
   },
   plugins: [preact({ devToolsEnabled: false })],
